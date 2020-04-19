@@ -7,6 +7,9 @@ import io.netty.handler.codec.MessageToMessageDecoder;
 
 import java.util.List;
 
+/**
+ * @author baizel
+ */
 public class Decoder extends MessageToMessageDecoder<ByteBuf> {
 
     private static final int MIN_LENGTH = Integer.BYTES * 2;

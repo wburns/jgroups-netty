@@ -18,19 +18,19 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
+/***
+ * @author Baizel Mathew
+ */
 public class NettyClient {
     protected final Log log = LogFactory.getLog(this.getClass());
 
     private EventLoopGroup group;
     ChannelGroup connections;
     private Map<SocketAddress, ChannelId> channelIds;
-    private InetAddress local_addr;
-    private int local_port;
+    private Bootstrap bootstrap;
 
     public NettyClient(InetAddress local_addr, int port) {
         channelIds = new HashMap<>();
@@ -38,12 +38,24 @@ public class NettyClient {
 
         group = new NioEventLoopGroup();
 
-        this.local_addr = local_addr;
-        this.local_port = port;
 
+        bootstrap = new Bootstrap();
+        bootstrap.group(group)
+                .channel(NioSocketChannel.class)
+                .localAddress(local_addr, port)
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000) // Wait 2 seconds for conn
+                .option(ChannelOption.SO_REUSEADDR, true)
+                .handler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) throws Exception {
+                        ch.pipeline().addLast(new ByteArrayEncoder());
+                        ch.pipeline().addLast(new ByteArrayDecoder());
+                        ch.pipeline().addLast(new ClientHandler());
+                    }
+                });
     }
 
-    private void close() throws InterruptedException {
+    public void close() throws InterruptedException {
         group.shutdownGracefully().sync();
     }
 
@@ -56,7 +68,6 @@ public class NettyClient {
         Channel ch = connect(dest);
         if (ch != null) {
             byte[] packedData = pack(data, offset, length);
-//            log.error("Packed data - Len "+ length + " ACtualv datbuf len "+ data.length + " Send to "+ ch.remoteAddress() + " from "+ ch.localAddress());
             ch.writeAndFlush(packedData).sync();
         }
     }
@@ -71,24 +82,14 @@ public class NettyClient {
 
     private Channel connect(InetSocketAddress remote_addr) throws InterruptedException {
         if (!channelIds.containsKey(remote_addr)) {
-            Bootstrap b = new Bootstrap();
-            b.group(group)
-                    .channel(NioSocketChannel.class)
-                    .localAddress(local_addr,local_port)
-                    .remoteAddress(remote_addr)
-                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,2000) // Wait 2 seconds for conn
-                    .handler(new ChannelInitializer<SocketChannel>() {
-                        @Override
-                        protected void initChannel(SocketChannel ch) throws Exception {
-                            ch.pipeline().addLast(new ByteArrayEncoder());
-                            ch.pipeline().addLast(new ByteArrayDecoder());
-                            ch.pipeline().addLast(new ClientHandler());
-                        }
-                    });
-            ChannelFuture cf = b.connect();
+            ChannelFuture cf = bootstrap.connect(remote_addr);
             cf.awaitUninterruptibly();
-            if (cf.isSuccess())
-                return cf.channel();
+            if (cf.isDone())
+                if (cf.isSuccess())
+                    return cf.channel();
+                else {
+                    cf.channel().close().sync();
+                }
             return null;
         }
         return connections.find(channelIds.get(remote_addr));
@@ -100,15 +101,13 @@ public class NettyClient {
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
             SocketAddress addr = ctx.channel().remoteAddress();
-            log.error("Channel Active and added " + addr);
             connections.add(ctx.channel());
             channelIds.put(addr, ctx.channel().id());
         }
 
         @Override
         public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
-//            log.error((byte[]) msg + " Not suspposed to receive messages here");
-            //TODO: handle message
+            log.error("Client received message when its not supposed to");
         }
     }
 }

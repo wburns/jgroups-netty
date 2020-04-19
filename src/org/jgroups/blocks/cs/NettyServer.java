@@ -1,8 +1,6 @@
 package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
@@ -10,10 +8,7 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import org.jgroups.Address;
-import org.jgroups.logging.Log;
-import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
-import org.jgroups.tests.ParseMessages;
 
 import java.net.BindException;
 import java.net.InetAddress;
@@ -24,8 +19,6 @@ import java.nio.ByteBuffer;
  * @author Baizel Mathew
  */
 public class NettyServer {
-
-//    protected final Log log = LogFactory.getLog(this.getClass());
 
     private int port;
     private InetAddress bind_addr;
@@ -52,7 +45,7 @@ public class NettyServer {
         };
     }
 
-    private void shutdown() throws InterruptedException {
+    public void shutdown() throws InterruptedException {
         boss_group.shutdownGracefully().sync();
         worker_group.shutdownGracefully().sync();
     }
@@ -66,10 +59,11 @@ public class NettyServer {
                 .channel(NioServerSocketChannel.class)
                 .localAddress(bind_addr, port)
                 .childHandler(channel_initializer)
-                .option(ChannelOption.SO_BACKLOG, 128)
-                .childOption(ChannelOption.SO_KEEPALIVE, true);
+//                .option(ChannelOption.SO_BACKLOG, 128)
+                .option(ChannelOption.SO_REUSEADDR, true);
+//                .childOption(ChannelOption.SO_KEEPALIVE, true);
 
-        ChannelFuture future = b.bind().sync();
+        b.bind().sync();
 
     }
 
@@ -77,16 +71,15 @@ public class NettyServer {
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
             InetSocketAddress soc = (InetSocketAddress) ctx.channel().remoteAddress();
-            Address sender = new IpAddress(soc.getAddress(),soc.getPort());
+            Address sender = new IpAddress(soc.getAddress(), soc.getPort());
             byte[] bMsg = (byte[]) msg;
-//            log.error("Received Size "+ bMsg.length + " sendTo "+ bind_addr + ":"+port);
             ByteBuffer buf = ByteBuffer.wrap(bMsg);
             int offset = buf.getInt();
             int length = buf.getInt();
             byte[] data = new byte[length];
 
-            buf.get(data,0,length);
-            callback.onReceive(sender,data,offset,length);
+            buf.get(data, 0, length);
+            callback.onReceive(sender, data, offset, length);
         }
 
         @Override
