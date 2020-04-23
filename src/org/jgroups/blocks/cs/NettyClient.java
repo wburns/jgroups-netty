@@ -32,27 +32,31 @@ public class NettyClient {
     private Map<SocketAddress, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
-    public NettyClient(InetAddress local_addr, int port) {
+    public NettyClient(InetAddress local_addr, int port, int max_timeout_interval) {
         channelIds = new HashMap<>();
         connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
 
-        group = new NioEventLoopGroup();
+        this.group = new NioEventLoopGroup(2);
 
 
         bootstrap = new Bootstrap();
         bootstrap.group(group)
                 .channel(NioSocketChannel.class)
                 .localAddress(local_addr, port)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 2000) // Wait 2 seconds for conn
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, max_timeout_interval)
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
                         ch.pipeline().addLast(new ByteArrayEncoder());
-                        ch.pipeline().addLast(new ByteArrayDecoder());
+                        ch.pipeline().addLast(new Decoder());
                         ch.pipeline().addLast(new ClientHandler());
                     }
                 });
+    }
+
+    public NettyClient(InetAddress local_addr, int port) {
+        this(local_addr, port, 2000);
     }
 
     public void close() throws InterruptedException {
@@ -66,7 +70,8 @@ public class NettyClient {
     public void send(InetAddress remote_addr, int remote_port, byte[] data, int offset, int length) throws InterruptedException {
         InetSocketAddress dest = new InetSocketAddress(remote_addr, remote_port);
         Channel ch = connect(dest);
-        if (ch != null) {
+        if (ch != null && ch.isOpen()) {
+            //TODO: Fix race condition here
             byte[] packedData = pack(data, offset, length);
             ch.writeAndFlush(packedData).sync();
         }
@@ -83,7 +88,8 @@ public class NettyClient {
     private Channel connect(InetSocketAddress remote_addr) throws InterruptedException {
         if (!channelIds.containsKey(remote_addr)) {
             ChannelFuture cf = bootstrap.connect(remote_addr);
-            cf.awaitUninterruptibly();
+            cf.awaitUninterruptibly(); // Wait max_timeout_interval seconds for conn
+
             if (cf.isDone())
                 if (cf.isSuccess())
                     return cf.channel();
@@ -108,6 +114,19 @@ public class NettyClient {
         @Override
         public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
             log.error("Client received message when its not supposed to");
+        }
+
+        @Override
+        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+            Channel ch = ctx.channel();
+            connections.remove(ch);
+            channelIds.remove(ch.remoteAddress());
+            ch.close();
+        }
+
+        @Override
+        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+            log.error("Error caught in client "+ cause);
         }
     }
 }

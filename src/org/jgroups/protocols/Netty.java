@@ -1,5 +1,7 @@
 package org.jgroups.protocols;
 
+import io.netty.channel.nio.NioEventLoop;
+import io.netty.channel.nio.NioEventLoopGroup;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.blocks.cs.NettyClient;
@@ -38,7 +40,7 @@ public class Netty extends BasicTCP {
     public void stop() {
         try {
             server.shutdown();
-            client.close();
+//            client.close();
         } catch (InterruptedException e) {
             e.printStackTrace();
             log.error("Failed to shutdown server");
