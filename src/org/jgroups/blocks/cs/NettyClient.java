@@ -7,17 +7,17 @@ import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.util.concurrent.GlobalEventExecutor;
+import org.jgroups.Address;
 import org.jgroups.logging.Log;
 import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.SocketAddress;
 import java.nio.ByteBuffer;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -29,7 +29,7 @@ public class NettyClient {
 
     private EventLoopGroup group;
     ChannelGroup connections;
-    private Map<SocketAddress, ChannelId> channelIds;
+    private Map<Address, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
     public NettyClient(InetAddress local_addr, int port, int max_timeout_interval) {
@@ -64,17 +64,29 @@ public class NettyClient {
     }
 
     public void send(IpAddress dest, byte[] data, int offset, int length) throws InterruptedException {
-        send(dest.getIpAddress(), dest.getPort(), data, offset, length);
+        Channel ch = connect(dest);
+        if (ch != null &&  ch.isOpen()) {
+            byte[] packedData = pack(data, offset, length);
+            ch.writeAndFlush(packedData);
+        }
     }
 
     public void send(InetAddress remote_addr, int remote_port, byte[] data, int offset, int length) throws InterruptedException {
-        InetSocketAddress dest = new InetSocketAddress(remote_addr, remote_port);
-        Channel ch = connect(dest);
-        if (ch != null && ch.isOpen()) {
-            //TODO: Fix race condition here
-            byte[] packedData = pack(data, offset, length);
-            ch.writeAndFlush(packedData).sync();
+        IpAddress dest = new IpAddress(remote_addr, remote_port);
+        send(dest, data, offset, length);
+    }
+
+    public void retainAll(Collection<Address> members) {
+        if (members == null)
+            return;
+
+        Map<Address, ChannelId> copy = null;
+        synchronized (this) {
+            copy = new HashMap<>(channelIds);
+            channelIds.keySet().retainAll(members);
         }
+        //No need to close channel in connections since its already handled by ChannelGroup
+        copy.clear();
     }
 
     private byte[] pack(byte[] data, int offset, int length) {
@@ -85,9 +97,9 @@ public class NettyClient {
         return buf.array();
     }
 
-    private Channel connect(InetSocketAddress remote_addr) throws InterruptedException {
+    private Channel connect(IpAddress remote_addr) throws InterruptedException {
         if (!channelIds.containsKey(remote_addr)) {
-            ChannelFuture cf = bootstrap.connect(remote_addr);
+            ChannelFuture cf = bootstrap.connect(new InetSocketAddress(remote_addr.getIpAddress(), remote_addr.getPort()));
             cf.awaitUninterruptibly(); // Wait max_timeout_interval seconds for conn
 
             if (cf.isDone())
@@ -106,27 +118,27 @@ public class NettyClient {
 
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
-            SocketAddress addr = ctx.channel().remoteAddress();
+            Address addr = new IpAddress((InetSocketAddress) ctx.channel().remoteAddress());
             connections.add(ctx.channel());
             channelIds.put(addr, ctx.channel().id());
         }
 
         @Override
         public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
-            log.error("Client received message when its not supposed to");
+            log.warn("Client received message when its not supposed to");
         }
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
             Channel ch = ctx.channel();
             connections.remove(ch);
-            channelIds.remove(ch.remoteAddress());
+            channelIds.remove(new IpAddress((InetSocketAddress) ch.remoteAddress()));
             ch.close();
         }
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error caught in client "+ cause);
+            log.error("Error caught in client " + cause);
         }
     }
 }

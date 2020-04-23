@@ -7,6 +7,8 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import org.jgroups.Address;
+import org.jgroups.logging.Log;
+import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
 
 import java.net.BindException;
@@ -22,6 +24,7 @@ public class NettyServer {
     private int port;
     private InetAddress bind_addr;
 
+    protected Log log = LogFactory.getLog(getClass());
 
     private EventLoopGroup boss_group;
     private EventLoopGroup worker_group;
@@ -77,11 +80,10 @@ public class NettyServer {
             InetSocketAddress soc = (InetSocketAddress) ctx.channel().remoteAddress();
             Address sender = new IpAddress(soc.getAddress(), soc.getPort());
 //            byte[] bMsg = (byte[]) msg;
-            int offset = fromByteArray(msg,0);
+            int offset = fromByteArray(msg, 0);
             int length = fromByteArray(msg, Integer.BYTES);
-            byte[] data = readNBytes(msg,Integer.BYTES*2,length);
+            byte[] data = readNBytes(msg, Integer.BYTES * 2, length);
 
-//            buf.get(data, 0, length);
             callback.onReceive(sender, data, offset, length);
         }
 
@@ -95,11 +97,13 @@ public class NettyServer {
     public Address getLocalAddress() {
         return new IpAddress(bind_addr, port);
     }
-    private byte[] readNBytes(byte[] data, int offset, int length){
-        return Arrays.copyOfRange(data,offset,length+offset);
+
+    private byte[] readNBytes(byte[] data, int offset, int length) {
+        return Arrays.copyOfRange(data, offset, length + offset);
     }
+
     private int fromByteArray(byte[] data, int offset) {
-        return  ((data[offset + 0] & 0xFF) << 24) |
+        return ((data[offset + 0] & 0xFF) << 24) |
                 ((data[offset + 1] & 0xFF) << 16) |
                 ((data[offset + 2] & 0xFF) << 8) |
                 ((data[offset + 3] & 0xFF) << 0);

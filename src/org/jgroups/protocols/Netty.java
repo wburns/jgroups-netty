@@ -56,6 +56,7 @@ public class Netty extends BasicTCP {
 
     @Override
     public String printConnections() {
+        //TODO
         return null;
     }
 
@@ -66,7 +67,7 @@ public class Netty extends BasicTCP {
 
     @Override
     public void retainAll(Collection<Address> members) {
-        //TODO
+        client.retainAll(members);
     }
 
     private boolean createServer() throws InterruptedException {
