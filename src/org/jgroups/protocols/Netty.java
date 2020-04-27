@@ -67,7 +67,7 @@ public class Netty extends BasicTCP {
 
     @Override
     public void retainAll(Collection<Address> members) {
-        client.retainAll(members);
+//        client.retainAll(members);
     }
 
     private boolean createServer() throws InterruptedException {

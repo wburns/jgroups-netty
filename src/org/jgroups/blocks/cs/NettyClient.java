@@ -16,8 +16,8 @@ import org.jgroups.stack.IpAddress;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -29,7 +29,7 @@ public class NettyClient {
 
     private EventLoopGroup group;
     ChannelGroup connections;
-    private Map<Address, ChannelId> channelIds;
+    private Map<SocketAddress, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
     public NettyClient(InetAddress local_addr, int port, int max_timeout_interval) {
@@ -64,30 +64,30 @@ public class NettyClient {
     }
 
     public void send(IpAddress dest, byte[] data, int offset, int length) throws InterruptedException {
+        send(dest.getIpAddress(), dest.getPort(), data, offset, length);
+    }
+
+    public void send(InetAddress remote_addr, int remote_port, byte[] data, int offset, int length) throws InterruptedException {
+        InetSocketAddress dest = new InetSocketAddress(remote_addr, remote_port);
         Channel ch = connect(dest);
-        if (ch != null &&  ch.isOpen()) {
+        if (ch != null && ch.isOpen()) {
             byte[] packedData = pack(data, offset, length);
             ch.writeAndFlush(packedData);
         }
     }
 
-    public void send(InetAddress remote_addr, int remote_port, byte[] data, int offset, int length) throws InterruptedException {
-        IpAddress dest = new IpAddress(remote_addr, remote_port);
-        send(dest, data, offset, length);
-    }
-
-    public void retainAll(Collection<Address> members) {
-        if (members == null)
-            return;
-
-        Map<Address, ChannelId> copy = null;
-        synchronized (this) {
-            copy = new HashMap<>(channelIds);
-            channelIds.keySet().retainAll(members);
-        }
-        //No need to close channel in connections since its already handled by ChannelGroup
-        copy.clear();
-    }
+//    public void retainAll(Collection<Address> members) {
+//        if (members == null)
+//            return;
+//
+//        Map<Address, ChannelId> copy = null;
+//        synchronized (this) {
+//            copy = new HashMap<>(channelIds);
+//            channelIds.keySet().retainAll(members);
+//        }
+//        //No need to close channel in connections since its already handled by ChannelGroup
+//        copy.clear();
+//    }
 
     private byte[] pack(byte[] data, int offset, int length) {
         ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES + Integer.BYTES + data.length);
@@ -97,20 +97,21 @@ public class NettyClient {
         return buf.array();
     }
 
-    private Channel connect(IpAddress remote_addr) throws InterruptedException {
-        if (!channelIds.containsKey(remote_addr)) {
-            ChannelFuture cf = bootstrap.connect(new InetSocketAddress(remote_addr.getIpAddress(), remote_addr.getPort()));
-            cf.awaitUninterruptibly(); // Wait max_timeout_interval seconds for conn
+    public Channel connect(InetSocketAddress remote_addr) throws InterruptedException {
+        ChannelId chId = channelIds.get(remote_addr);
+        if (chId != null)
+            return connections.find(chId);
 
-            if (cf.isDone())
-                if (cf.isSuccess())
-                    return cf.channel();
-                else {
-                    cf.channel().close().sync();
-                }
-            return null;
-        }
-        return connections.find(channelIds.get(remote_addr));
+        ChannelFuture cf = bootstrap.connect(remote_addr);
+        cf.awaitUninterruptibly(); // Wait max_timeout_interval seconds for conn
+
+        if (cf.isDone())
+            if (cf.isSuccess())
+                return cf.channel();
+            else {
+                cf.channel().close().sync();
+            }
+        return null;
     }
 
 
@@ -118,7 +119,7 @@ public class NettyClient {
 
         @Override
         public void channelActive(ChannelHandlerContext ctx) throws Exception {
-            Address addr = new IpAddress((InetSocketAddress) ctx.channel().remoteAddress());
+            SocketAddress addr = ctx.channel().remoteAddress();
             connections.add(ctx.channel());
             channelIds.put(addr, ctx.channel().id());
         }
@@ -132,7 +133,7 @@ public class NettyClient {
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {
             Channel ch = ctx.channel();
             connections.remove(ch);
-            channelIds.remove(new IpAddress((InetSocketAddress) ch.remoteAddress()));
+            channelIds.remove(ch.remoteAddress());
             ch.close();
         }
 
