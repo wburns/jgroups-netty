@@ -7,6 +7,8 @@ import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import org.jgroups.Address;
@@ -32,7 +34,7 @@ public class NettyClient {
     private Map<SocketAddress, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
-    public NettyClient(InetAddress local_addr, int port, int max_timeout_interval) {
+    public NettyClient(InetAddress local_addr, int port, int max_timeout_interval,int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
         channelIds = new HashMap<>();
         connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
 
@@ -49,14 +51,14 @@ public class NettyClient {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
                         ch.pipeline().addLast(new ByteArrayEncoder());
-                        ch.pipeline().addLast(new Decoder());
+                        ch.pipeline().addLast(new ByteArrayDecoder());
                         ch.pipeline().addLast(new ClientHandler());
                     }
                 });
     }
 
-    public NettyClient(InetAddress local_addr, int port) {
-        this(local_addr, port, 2000);
+    public NettyClient(InetAddress local_addr, int port, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
+        this(local_addr, port, 2000, MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
     }
 
     public void close() throws InterruptedException {
@@ -90,7 +92,8 @@ public class NettyClient {
 //    }
 
     private byte[] pack(byte[] data, int offset, int length) {
-        ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES + Integer.BYTES + data.length);
+        ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES+ Integer.BYTES + Integer.BYTES + data.length);
+        buf.putInt(Integer.BYTES + Integer.BYTES + data.length);
         buf.putInt(offset);
         buf.putInt(length);
         buf.put(data);

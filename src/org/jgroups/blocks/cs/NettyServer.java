@@ -1,10 +1,13 @@
 package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.ServerBootstrap;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import org.jgroups.Address;
 import org.jgroups.logging.Log;
@@ -34,7 +37,7 @@ public class NettyServer {
     private NettyReceiverCallback callback;
     private ChannelInitializer<SocketChannel> channel_initializer;
 
-    public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback) {
+    public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
@@ -44,8 +47,7 @@ public class NettyServer {
             @Override
             public void initChannel(SocketChannel ch) throws Exception {
                 ch.pipeline().addLast(
-                        new Decoder(),
-                        new ByteArrayEncoder());
+                        new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH,0,LENGTH_OF_FIELD,0,LENGTH_OF_FIELD));
                 ch.pipeline().addLast(serprateGroup, "handler", new ReceiverHandler());
             }
         };
@@ -74,16 +76,15 @@ public class NettyServer {
     }
 
     @ChannelHandler.Sharable
-    private class ReceiverHandler extends SimpleChannelInboundHandler<byte[]> {
+    private class ReceiverHandler extends SimpleChannelInboundHandler<ByteBuf> {
         @Override
-        public void channelRead0(ChannelHandlerContext ctx, byte[] msg) throws Exception {
+        public void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
+            int offset = msg.readInt();
+            int length = msg.readInt();
+            byte[] data = new byte[length];
+            msg.readBytes(data);
             InetSocketAddress soc = (InetSocketAddress) ctx.channel().remoteAddress();
             Address sender = new IpAddress(soc.getAddress(), soc.getPort());
-//            byte[] bMsg = (byte[]) msg;
-            int offset = fromByteArray(msg, 0);
-            int length = fromByteArray(msg, Integer.BYTES);
-            byte[] data = readNBytes(msg, Integer.BYTES * 2, length);
-
             callback.onReceive(sender, data, offset, length);
         }
 
@@ -98,15 +99,5 @@ public class NettyServer {
         return new IpAddress(bind_addr, port);
     }
 
-    private byte[] readNBytes(byte[] data, int offset, int length) {
-        return Arrays.copyOfRange(data, offset, length + offset);
-    }
-
-    private int fromByteArray(byte[] data, int offset) {
-        return ((data[offset + 0] & 0xFF) << 24) |
-                ((data[offset + 1] & 0xFF) << 16) |
-                ((data[offset + 2] & 0xFF) << 8) |
-                ((data[offset + 3] & 0xFF) << 0);
-    }
 }
 

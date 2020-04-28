@@ -16,6 +16,8 @@ import java.util.Collection;
  * @author Baizel Mathew
  */
 public class Netty extends BasicTCP {
+    public final int MAX_FRAME_LENGTH = 65000;
+    public final int LENGTH_OF_FIELD = Integer.BYTES;
 
     private NettyClient client;
     private NettyServer server;
@@ -30,7 +32,7 @@ public class Netty extends BasicTCP {
             //TODO: Fix this to get valid port numbers
         }
         if (isServerCreated)
-            client = new NettyClient(bind_addr, bind_port + 50);
+            client = new NettyClient(bind_addr, bind_port + 50,MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
         else
             throw new BindException("No port found to bind within port range");
         super.start();
@@ -82,7 +84,7 @@ public class Netty extends BasicTCP {
                 public void onError(Throwable ex) {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
-            });
+            }, MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
             server.run();
         } catch (BindException exception) {
             server.shutdown();
