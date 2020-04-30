@@ -7,11 +7,9 @@ import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.util.concurrent.GlobalEventExecutor;
-import org.jgroups.Address;
 import org.jgroups.logging.Log;
 import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
@@ -34,19 +32,19 @@ public class NettyClient {
     private Map<SocketAddress, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
-    public NettyClient(InetAddress local_addr, int port, int max_timeout_interval,int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
+    public NettyClient(InetAddress local_addr, int max_timeout_interval, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
         channelIds = new HashMap<>();
         connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
-
-        this.group = new NioEventLoopGroup(2);
+        this.group = new NioEventLoopGroup();
 
 
         bootstrap = new Bootstrap();
         bootstrap.group(group)
                 .channel(NioSocketChannel.class)
-                .localAddress(local_addr, port)
+                .localAddress(local_addr, 0)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, max_timeout_interval)
                 .option(ChannelOption.SO_REUSEADDR, true)
+                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(8 * 1024, 16 * 1024))
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
@@ -57,8 +55,8 @@ public class NettyClient {
                 });
     }
 
-    public NettyClient(InetAddress local_addr, int port, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
-        this(local_addr, port, 2000, MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
+    public NettyClient(InetAddress local_addr, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
+        this(local_addr, 2000, MAX_FRAME_LENGTH, LENGTH_OF_FIELD);
     }
 
     public void close() throws InterruptedException {
@@ -74,7 +72,7 @@ public class NettyClient {
         Channel ch = connect(dest);
         if (ch != null && ch.isOpen()) {
             byte[] packedData = pack(data, offset, length);
-            ch.writeAndFlush(packedData);
+            ch.writeAndFlush(packedData, ch.voidPromise());
         }
     }
 
@@ -92,7 +90,7 @@ public class NettyClient {
 //    }
 
     private byte[] pack(byte[] data, int offset, int length) {
-        ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES+ Integer.BYTES + Integer.BYTES + data.length);
+        ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length);
         buf.putInt(Integer.BYTES + Integer.BYTES + data.length);
         buf.putInt(offset);
         buf.putInt(length);
@@ -116,7 +114,6 @@ public class NettyClient {
             }
         return null;
     }
-
 
     class ClientHandler extends ChannelInboundHandlerAdapter {
 

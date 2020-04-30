@@ -32,7 +32,7 @@ public class Netty extends BasicTCP {
             //TODO: Fix this to get valid port numbers
         }
         if (isServerCreated)
-            client = new NettyClient(bind_addr, bind_port + 50,MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
+            client = new NettyClient(bind_addr,MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
         else
             throw new BindException("No port found to bind within port range");
         super.start();

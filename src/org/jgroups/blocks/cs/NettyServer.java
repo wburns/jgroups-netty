@@ -2,13 +2,13 @@ package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.Unpooled;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.codec.bytes.ByteArrayEncoder;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import org.jgroups.Address;
 import org.jgroups.logging.Log;
 import org.jgroups.logging.LogFactory;
@@ -17,7 +17,6 @@ import org.jgroups.stack.IpAddress;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.util.Arrays;
 
 /***
  * @author Baizel Mathew
@@ -31,8 +30,7 @@ public class NettyServer {
 
     private EventLoopGroup boss_group;
     private EventLoopGroup worker_group;
-
-//    private EventLoopGroup sharedEventLoop;
+    private EventLoopGroup separateWorkerGroup;
 
     private NettyReceiverCallback callback;
     private ChannelInitializer<SocketChannel> channel_initializer;
@@ -41,14 +39,14 @@ public class NettyServer {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
-        EventLoopGroup serprateGroup = new NioEventLoopGroup();
+        separateWorkerGroup = new NioEventLoopGroup();
 
         channel_initializer = new ChannelInitializer<SocketChannel>() {
             @Override
             public void initChannel(SocketChannel ch) throws Exception {
-                ch.pipeline().addLast(
-                        new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH,0,LENGTH_OF_FIELD,0,LENGTH_OF_FIELD));
-                ch.pipeline().addLast(serprateGroup, "handler", new ReceiverHandler());
+                ch.pipeline().addFirst(new FlushConsolidationHandler());
+                ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));
+                ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler());
             }
         };
     }
@@ -56,26 +54,28 @@ public class NettyServer {
     public void shutdown() throws InterruptedException {
         boss_group.shutdownGracefully().sync();
         worker_group.shutdownGracefully().sync();
-//        sharedEventLoop.shutdownGracefully();
+        separateWorkerGroup.shutdownGracefully();
     }
 
     public void run() throws InterruptedException, BindException {
-        boss_group = new NioEventLoopGroup(1);
-        worker_group = new NioEventLoopGroup(2);
+        int cores = Runtime.getRuntime().availableProcessors();
+        boss_group = new NioEventLoopGroup(cores);
+        worker_group = new NioEventLoopGroup(2 * cores - 1);
 
         ServerBootstrap b = new ServerBootstrap();
         b.group(boss_group, worker_group)
                 .channel(NioServerSocketChannel.class)
                 .localAddress(bind_addr, port)
                 .childHandler(channel_initializer)
-                .option(ChannelOption.SO_BACKLOG, 128)
                 .option(ChannelOption.SO_REUSEADDR, true)
-                .childOption(ChannelOption.SO_KEEPALIVE, true);
+                .option(ChannelOption.SO_BACKLOG, 128)
+                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(32 * 1024, 64 * 1024));
         b.bind().sync();
 
     }
 
-    @ChannelHandler.Sharable
+
     private class ReceiverHandler extends SimpleChannelInboundHandler<ByteBuf> {
         @Override
         public void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
