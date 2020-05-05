@@ -9,11 +9,13 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
+import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import org.jgroups.logging.Log;
 import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
 
+import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -44,10 +46,12 @@ public class NettyClient {
                 .localAddress(local_addr, 0)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, max_timeout_interval)
                 .option(ChannelOption.SO_REUSEADDR, true)
-                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(8 * 1024, 16 * 1024))
+                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(512 * 1024, 1024 * 1024))
+//                .option(ChannelOption.TCP_NODELAY, true)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
+                        ch.pipeline().addFirst(new FlushConsolidationHandler(1024));
                         ch.pipeline().addLast(new ByteArrayEncoder());
                         ch.pipeline().addLast(new ByteArrayDecoder());
                         ch.pipeline().addLast(new ClientHandler());
@@ -75,19 +79,6 @@ public class NettyClient {
             ch.writeAndFlush(packedData, ch.voidPromise());
         }
     }
-
-//    public void retainAll(Collection<Address> members) {
-//        if (members == null)
-//            return;
-//
-//        Map<Address, ChannelId> copy = null;
-//        synchronized (this) {
-//            copy = new HashMap<>(channelIds);
-//            channelIds.keySet().retainAll(members);
-//        }
-//        //No need to close channel in connections since its already handled by ChannelGroup
-//        copy.clear();
-//    }
 
     private byte[] pack(byte[] data, int offset, int length) {
         ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length);
@@ -139,7 +130,15 @@ public class NettyClient {
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error caught in client " + cause);
+            if (!(cause instanceof IOException)){
+               log.error("Error caught in client "+ cause.toString());
+                cause.printStackTrace();
+            }
+        }
+
+        @Override
+        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+            ctx.flush();
         }
     }
 }

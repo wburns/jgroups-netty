@@ -9,6 +9,8 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.flush.FlushConsolidationHandler;
+import io.netty.util.concurrent.DefaultEventExecutorGroup;
+import io.netty.util.concurrent.EventExecutorGroup;
 import org.jgroups.Address;
 import org.jgroups.logging.Log;
 import org.jgroups.logging.LogFactory;
@@ -26,42 +28,42 @@ public class NettyServer {
     private int port;
     private InetAddress bind_addr;
 
-    protected Log log = LogFactory.getLog(getClass());
-
-    private EventLoopGroup boss_group;
-    private EventLoopGroup worker_group;
-    private EventLoopGroup separateWorkerGroup;
+    private static final int CORES = Runtime.getRuntime().availableProcessors();
+    //TODO: decide the optimal amount of threads for each loop
+    private EventLoopGroup boss_group = new NioEventLoopGroup(); // Handles incoming connections
+    private EventLoopGroup worker_group = new NioEventLoopGroup();
+    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(16);
 
     private NettyReceiverCallback callback;
     private ChannelInitializer<SocketChannel> channel_initializer;
+
+    protected Log log = LogFactory.getLog(getClass());
 
     public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
-        separateWorkerGroup = new NioEventLoopGroup();
 
         channel_initializer = new ChannelInitializer<SocketChannel>() {
             @Override
             public void initChannel(SocketChannel ch) throws Exception {
-                ch.pipeline().addFirst(new FlushConsolidationHandler());
+                ch.pipeline().addFirst(new FlushConsolidationHandler(1024));
                 ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));
+                //Its own thread so it wont block IO thread
                 ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler());
             }
         };
     }
 
     public void shutdown() throws InterruptedException {
-        boss_group.shutdownGracefully().sync();
-        worker_group.shutdownGracefully().sync();
+        boss_group.shutdownGracefully();
+        worker_group.shutdownGracefully();
         separateWorkerGroup.shutdownGracefully();
     }
 
     public void run() throws InterruptedException, BindException {
-        int cores = Runtime.getRuntime().availableProcessors();
-        boss_group = new NioEventLoopGroup(cores);
-        worker_group = new NioEventLoopGroup(2 * cores - 1);
-
+        //TODO: add the option to use native transport for Unix machines
+        //https://netty.io/wiki/native-transports.html
         ServerBootstrap b = new ServerBootstrap();
         b.group(boss_group, worker_group)
                 .channel(NioServerSocketChannel.class)
@@ -69,8 +71,10 @@ public class NettyServer {
                 .childHandler(channel_initializer)
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
-                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(32 * 1024, 64 * 1024));
+                .option(ChannelOption.RCVBUF_ALLOCATOR,new AdaptiveRecvByteBufAllocator())
+//                .childOption(ChannelOption.TCP_NODELAY,true)
+//                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(256 * 1024, 512 * 1024));
         b.bind().sync();
 
     }

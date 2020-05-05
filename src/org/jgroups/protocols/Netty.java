@@ -1,7 +1,5 @@
 package org.jgroups.protocols;
 
-import io.netty.channel.nio.NioEventLoop;
-import io.netty.channel.nio.NioEventLoopGroup;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.blocks.cs.NettyClient;
@@ -10,17 +8,36 @@ import org.jgroups.blocks.cs.NettyServer;
 import org.jgroups.stack.IpAddress;
 
 import java.net.BindException;
-import java.util.Collection;
 
 /***
  * @author Baizel Mathew
  */
-public class Netty extends BasicTCP {
-    public final int MAX_FRAME_LENGTH = 65000;
+public class Netty extends TP {
+    public final int MAX_FRAME_LENGTH = Integer.MAX_VALUE; // TODO: not sure if this is a great idea
     public final int LENGTH_OF_FIELD = Integer.BYTES;
 
     private NettyClient client;
     private NettyServer server;
+
+    @Override
+    public boolean supportsMulticasting() {
+        return false;
+    }
+
+    @Override
+    public void sendMulticast(byte[] data, int offset, int length) throws Exception {
+        sendToMembers(members, data, offset, length);
+    }
+
+    @Override
+    public void sendUnicast(PhysicalAddress dest, byte[] data, int offset, int length) throws Exception {
+        _send(dest,data,offset,length);
+    }
+
+    @Override
+    public String getInfo() {
+        return null;
+    }
 
     @Override
     public void start() throws Exception {
@@ -56,20 +73,9 @@ public class Netty extends BasicTCP {
         return server != null ? (PhysicalAddress) server.getLocalAddress() : null;
     }
 
-    @Override
-    public String printConnections() {
-        //TODO
-        return null;
-    }
 
-    @Override
-    public void send(Address dest, byte[] data, int offset, int length) throws Exception {
+    private void _send(Address dest, byte[] data, int offset, int length) throws Exception {
         client.send((IpAddress) dest, data, offset, length);
-    }
-
-    @Override
-    public void retainAll(Collection<Address> members) {
-//        client.retainAll(members);
     }
 
     private boolean createServer() throws InterruptedException {
@@ -96,5 +102,4 @@ public class Netty extends BasicTCP {
         }
         return true;
     }
-
 }
