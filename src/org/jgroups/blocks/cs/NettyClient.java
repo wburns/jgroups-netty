@@ -47,11 +47,11 @@ public class NettyClient {
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, max_timeout_interval)
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(512 * 1024, 1024 * 1024))
-//                .option(ChannelOption.TCP_NODELAY, true)
+                .option(ChannelOption.TCP_NODELAY, true)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) throws Exception {
-                        ch.pipeline().addFirst(new FlushConsolidationHandler(1024));
+                        ch.pipeline().addFirst(new FlushConsolidationHandler(512));
                         ch.pipeline().addLast(new ByteArrayEncoder());
                         ch.pipeline().addLast(new ByteArrayDecoder());
                         ch.pipeline().addLast(new ClientHandler());
@@ -76,7 +76,7 @@ public class NettyClient {
         Channel ch = connect(dest);
         if (ch != null && ch.isOpen()) {
             byte[] packedData = pack(data, offset, length);
-            ch.writeAndFlush(packedData, ch.voidPromise());
+            ch.eventLoop().execute(() -> ch.writeAndFlush(packedData, ch.voidPromise()));
         }
     }
 
@@ -130,15 +130,11 @@ public class NettyClient {
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            if (!(cause instanceof IOException)){
-               log.error("Error caught in client "+ cause.toString());
+            if (!(cause instanceof IOException)) {
+                log.error("Error caught in client " + cause.toString());
                 cause.printStackTrace();
             }
         }
 
-        @Override
-        public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
-            ctx.flush();
-        }
     }
 }

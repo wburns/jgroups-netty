@@ -47,7 +47,6 @@ public class NettyServer {
         channel_initializer = new ChannelInitializer<SocketChannel>() {
             @Override
             public void initChannel(SocketChannel ch) throws Exception {
-                ch.pipeline().addFirst(new FlushConsolidationHandler(1024));
                 ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));
                 //Its own thread so it wont block IO thread
                 ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler());
@@ -71,10 +70,10 @@ public class NettyServer {
                 .childHandler(channel_initializer)
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
-                .option(ChannelOption.RCVBUF_ALLOCATOR,new AdaptiveRecvByteBufAllocator())
-//                .childOption(ChannelOption.TCP_NODELAY,true)
-//                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(256 * 1024, 512 * 1024));
+                .option(ChannelOption.RCVBUF_ALLOCATOR,new AdaptiveRecvByteBufAllocator(200, 128 * 1024, 512 * 1024))
+                .childOption(ChannelOption.TCP_NODELAY,true)
+                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(128 * 1024, 512 * 1024));
         b.bind().sync();
 
     }

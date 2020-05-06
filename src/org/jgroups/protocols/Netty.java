@@ -31,7 +31,7 @@ public class Netty extends TP {
 
     @Override
     public void sendUnicast(PhysicalAddress dest, byte[] data, int offset, int length) throws Exception {
-        _send(dest,data,offset,length);
+        _send(dest, data, offset, length);
     }
 
     @Override
@@ -49,7 +49,7 @@ public class Netty extends TP {
             //TODO: Fix this to get valid port numbers
         }
         if (isServerCreated)
-            client = new NettyClient(bind_addr,MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
+            client = new NettyClient(bind_addr, MAX_FRAME_LENGTH, LENGTH_OF_FIELD);
         else
             throw new BindException("No port found to bind within port range");
         super.start();
@@ -90,7 +90,7 @@ public class Netty extends TP {
                 public void onError(Throwable ex) {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
-            }, MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
+            }, MAX_FRAME_LENGTH, LENGTH_OF_FIELD);
             server.run();
         } catch (BindException exception) {
             server.shutdown();
