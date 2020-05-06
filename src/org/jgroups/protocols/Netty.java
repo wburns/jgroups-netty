@@ -1,5 +1,7 @@
 package org.jgroups.protocols;
 
+
+import io.netty.channel.unix.Errors;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.blocks.cs.NettyClient;
@@ -92,12 +94,9 @@ public class Netty extends TP {
                 }
             }, MAX_FRAME_LENGTH, LENGTH_OF_FIELD);
             server.run();
-        } catch (BindException exception) {
+        } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             server.shutdown();
-            return false;
-        } catch (InterruptedException e) {
-            server.shutdown();
-            e.printStackTrace();
+            exception.printStackTrace();
             return false;
         }
         return true;

@@ -2,6 +2,8 @@ package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
@@ -27,7 +29,7 @@ import java.util.Map;
  * @author Baizel Mathew
  */
 public class NettyClient {
-    protected final Log log = LogFactory.getLog(this.getClass());
+//    protected final Log log = LogFactory.getLog(this.getClass());
 
     private EventLoopGroup group;
     ChannelGroup connections;
@@ -37,12 +39,12 @@ public class NettyClient {
     public NettyClient(InetAddress local_addr, int max_timeout_interval, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
         channelIds = new HashMap<>();
         connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
-        this.group = new NioEventLoopGroup();
+        this.group = new EpollEventLoopGroup();
 
 
         bootstrap = new Bootstrap();
         bootstrap.group(group)
-                .channel(NioSocketChannel.class)
+                .channel(EpollSocketChannel.class)
                 .localAddress(local_addr, 0)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, max_timeout_interval)
                 .option(ChannelOption.SO_REUSEADDR, true)
@@ -117,7 +119,7 @@ public class NettyClient {
 
         @Override
         public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
-            log.warn("Client received message when its not supposed to");
+//            log.warn("Client received message when its not supposed to");
         }
 
         @Override
@@ -131,7 +133,7 @@ public class NettyClient {
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
             if (!(cause instanceof IOException)) {
-                log.error("Error caught in client " + cause.toString());
+//                log.error("Error caught in client " + cause.toString());
                 cause.printStackTrace();
             }
         }

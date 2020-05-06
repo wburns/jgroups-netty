@@ -4,16 +4,14 @@ import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
-import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.unix.Errors;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 import org.jgroups.Address;
-import org.jgroups.logging.Log;
-import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
 
 import java.net.BindException;
@@ -30,14 +28,13 @@ public class NettyServer {
 
     private static final int CORES = Runtime.getRuntime().availableProcessors();
     //TODO: decide the optimal amount of threads for each loop
-    private EventLoopGroup boss_group = new NioEventLoopGroup(); // Handles incoming connections
-    private EventLoopGroup worker_group = new NioEventLoopGroup();
+    private EventLoopGroup boss_group = new EpollEventLoopGroup(); // Handles incoming connections
+    private EventLoopGroup worker_group = new EpollEventLoopGroup();
     private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(16);
 
     private NettyReceiverCallback callback;
     private ChannelInitializer<SocketChannel> channel_initializer;
 
-    protected Log log = LogFactory.getLog(getClass());
 
     public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
         this.port = port;
@@ -60,18 +57,18 @@ public class NettyServer {
         separateWorkerGroup.shutdownGracefully();
     }
 
-    public void run() throws InterruptedException, BindException {
+    public void run() throws InterruptedException, BindException, Errors.NativeIoException {
         //TODO: add the option to use native transport for Unix machines
         //https://netty.io/wiki/native-transports.html
         ServerBootstrap b = new ServerBootstrap();
         b.group(boss_group, worker_group)
-                .channel(NioServerSocketChannel.class)
+                .channel(EpollServerSocketChannel.class)
                 .localAddress(bind_addr, port)
                 .childHandler(channel_initializer)
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
-                .option(ChannelOption.RCVBUF_ALLOCATOR,new AdaptiveRecvByteBufAllocator(200, 128 * 1024, 512 * 1024))
-                .childOption(ChannelOption.TCP_NODELAY,true)
+                .option(ChannelOption.RCVBUF_ALLOCATOR, new AdaptiveRecvByteBufAllocator(200, 128 * 1024, 512 * 1024))
+                .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(128 * 1024, 512 * 1024));
         b.bind().sync();
