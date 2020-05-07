@@ -2,7 +2,6 @@ package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
-import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
@@ -27,17 +26,14 @@ import java.util.Map;
 public class NettyClient {
 //    protected final Log log = LogFactory.getLog(this.getClass());
 
-    private EventLoopGroup group;
     ChannelGroup connections;
     private Map<SocketAddress, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
-    public NettyClient(InetAddress local_addr, int max_timeout_interval) {
+    public NettyClient(EventLoopGroup group, InetAddress local_addr, int max_timeout_interval) {
 
         channelIds = new HashMap<>();
         connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
-        this.group = new EpollEventLoopGroup();
-
 
         bootstrap = new Bootstrap();
         bootstrap.group(group)
@@ -58,12 +54,8 @@ public class NettyClient {
                 });
     }
 
-    public NettyClient(InetAddress local_addr) {
-        this(local_addr, 1000);
-    }
-
-    public void close() throws InterruptedException {
-        group.shutdownGracefully().sync();
+    public NettyClient(EventLoopGroup group, InetAddress local_addr) {
+        this(group, local_addr, 1000);
     }
 
     public void send(IpAddress dest, byte[] data, int offset, int length) throws InterruptedException {
@@ -81,14 +73,6 @@ public class NettyClient {
         }
     }
 
-    private byte[] pack(byte[] data, int offset, int length) {
-        ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length);
-        buf.putInt(Integer.BYTES + Integer.BYTES + data.length);
-        buf.putInt(offset);
-        buf.putInt(length);
-        buf.put(data);
-        return buf.array();
-    }
 
     public Channel connect(InetSocketAddress remote_addr) throws InterruptedException {
         ChannelId chId = channelIds.get(remote_addr);
@@ -111,14 +95,17 @@ public class NettyClient {
         return null;
     }
 
-    @ChannelHandler.Sharable
-    class ClientHandler extends ChannelInboundHandlerAdapter {
+    private byte[] pack(byte[] data, int offset, int length) {
+        ByteBuffer buf = ByteBuffer.allocate(Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length);
+        buf.putInt(Integer.BYTES + Integer.BYTES + data.length);
+        buf.putInt(offset);
+        buf.putInt(length);
+        buf.put(data);
+        return buf.array();
+    }
 
-//        @Override
-//        public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
-////            log.warn("Client received message when its not supposed to");
-//            System.out.println("is this getting called");
-//        }
+    @ChannelHandler.Sharable
+    private class ClientHandler extends ChannelInboundHandlerAdapter {
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {

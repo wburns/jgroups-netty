@@ -1,6 +1,8 @@
 package org.jgroups.protocols;
 
 
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.EventLoopGroup;
 import io.netty.channel.unix.Errors;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
@@ -49,10 +51,7 @@ public class Netty extends TP {
             isServerCreated = createServer();
             //TODO: Fix this to get valid port numbers
         }
-        if (isServerCreated) {
-            client = new NettyClient(bind_addr);
-            selfAddress = new IpAddress(bind_addr, bind_port);
-        } else
+        if (!isServerCreated)
             throw new BindException("No port found to bind within port range");
         super.start();
     }
@@ -98,7 +97,9 @@ public class Netty extends TP {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
             });
-            server.run();
+            ChannelFuture cf = server.run();
+            client = new NettyClient(cf.channel().eventLoop(), bind_addr);
+            selfAddress = new IpAddress(bind_addr, bind_port);
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             server.shutdown();
             exception.printStackTrace();

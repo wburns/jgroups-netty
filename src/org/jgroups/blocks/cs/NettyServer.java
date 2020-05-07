@@ -2,7 +2,6 @@ package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
@@ -40,13 +39,17 @@ public class NettyServer {
         this.callback = callback;
     }
 
+    public Address getLocalAddress() {
+        return new IpAddress(bind_addr, port);
+    }
+
     public void shutdown() throws InterruptedException {
         boss_group.shutdownGracefully();
         worker_group.shutdownGracefully();
         separateWorkerGroup.shutdownGracefully();
     }
 
-    public void run() throws InterruptedException, BindException, Errors.NativeIoException {
+    public ChannelFuture run() throws InterruptedException, BindException, Errors.NativeIoException {
         //TODO: add the option to use native transport for Unix machines
         //https://netty.io/wiki/native-transports.html
         ServerBootstrap b = new ServerBootstrap();
@@ -60,7 +63,7 @@ public class NettyServer {
                 .childOption(ChannelOption.TCP_NODELAY, true)
 //                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(128 * 1024, 512 * 1024));
-        b.bind().sync();
+        return b.bind();
 
     }
 
@@ -107,9 +110,6 @@ public class NettyServer {
         }
     }
 
-    public Address getLocalAddress() {
-        return new IpAddress(bind_addr, port);
-    }
 
 }
 
