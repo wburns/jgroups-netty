@@ -6,15 +6,11 @@ import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
-import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.util.concurrent.GlobalEventExecutor;
-import org.jgroups.logging.Log;
-import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
 
 import java.io.IOException;
@@ -36,7 +32,8 @@ public class NettyClient {
     private Map<SocketAddress, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
-    public NettyClient(InetAddress local_addr, int max_timeout_interval, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
+    public NettyClient(InetAddress local_addr, int max_timeout_interval) {
+
         channelIds = new HashMap<>();
         connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
         this.group = new EpollEventLoopGroup();
@@ -61,8 +58,8 @@ public class NettyClient {
                 });
     }
 
-    public NettyClient(InetAddress local_addr, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
-        this(local_addr, 2000, MAX_FRAME_LENGTH, LENGTH_OF_FIELD);
+    public NettyClient(InetAddress local_addr) {
+        this(local_addr, 1000);
     }
 
     public void close() throws InterruptedException {
@@ -78,7 +75,9 @@ public class NettyClient {
         Channel ch = connect(dest);
         if (ch != null && ch.isOpen()) {
             byte[] packedData = pack(data, offset, length);
-            ch.eventLoop().execute(() -> ch.writeAndFlush(packedData, ch.voidPromise()));
+            ch.eventLoop().execute(() -> {
+                ch.writeAndFlush(packedData, ch.voidPromise());
+            });
         }
     }
 
@@ -99,28 +98,27 @@ public class NettyClient {
         ChannelFuture cf = bootstrap.connect(remote_addr);
         cf.awaitUninterruptibly(); // Wait max_timeout_interval seconds for conn
 
-        if (cf.isDone())
-            if (cf.isSuccess())
-                return cf.channel();
-            else {
-                cf.channel().close().sync();
+        if (cf.isDone()) {
+            Channel ch = cf.channel();
+            if (cf.isSuccess()) {
+                connections.add(ch);
+                channelIds.put(remote_addr, ch.id());
+                return ch;
+            } else {
+                ch.close().sync();
             }
+        }
         return null;
     }
 
+    @ChannelHandler.Sharable
     class ClientHandler extends ChannelInboundHandlerAdapter {
 
-        @Override
-        public void channelActive(ChannelHandlerContext ctx) throws Exception {
-            SocketAddress addr = ctx.channel().remoteAddress();
-            connections.add(ctx.channel());
-            channelIds.put(addr, ctx.channel().id());
-        }
-
-        @Override
-        public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
-//            log.warn("Client received message when its not supposed to");
-        }
+//        @Override
+//        public void channelRead(final ChannelHandlerContext ctx, Object msg) throws Exception {
+////            log.warn("Client received message when its not supposed to");
+//            System.out.println("is this getting called");
+//        }
 
         @Override
         public void channelInactive(ChannelHandlerContext ctx) throws Exception {

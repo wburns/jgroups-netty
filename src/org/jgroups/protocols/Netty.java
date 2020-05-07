@@ -15,11 +15,10 @@ import java.net.BindException;
  * @author Baizel Mathew
  */
 public class Netty extends TP {
-    public final int MAX_FRAME_LENGTH = Integer.MAX_VALUE; // TODO: not sure if this is a great idea
-    public final int LENGTH_OF_FIELD = Integer.BYTES;
 
     private NettyClient client;
     private NettyServer server;
+    private IpAddress selfAddress = null;
 
     @Override
     public boolean supportsMulticasting() {
@@ -50,9 +49,10 @@ public class Netty extends TP {
             isServerCreated = createServer();
             //TODO: Fix this to get valid port numbers
         }
-        if (isServerCreated)
-            client = new NettyClient(bind_addr, MAX_FRAME_LENGTH, LENGTH_OF_FIELD);
-        else
+        if (isServerCreated) {
+            client = new NettyClient(bind_addr);
+            selfAddress = new IpAddress(bind_addr, bind_port);
+        } else
             throw new BindException("No port found to bind within port range");
         super.start();
     }
@@ -77,7 +77,12 @@ public class Netty extends TP {
 
 
     private void _send(Address dest, byte[] data, int offset, int length) throws Exception {
-        client.send((IpAddress) dest, data, offset, length);
+        IpAddress destAddr = (IpAddress) dest;
+        if (destAddr != selfAddress)
+            client.send(destAddr, data, offset, length);
+        else {
+            //TODO: loop back
+        }
     }
 
     private boolean createServer() throws InterruptedException {
@@ -92,7 +97,7 @@ public class Netty extends TP {
                 public void onError(Throwable ex) {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
-            }, MAX_FRAME_LENGTH, LENGTH_OF_FIELD);
+            });
             server.run();
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             server.shutdown();

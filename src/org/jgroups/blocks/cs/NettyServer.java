@@ -33,22 +33,11 @@ public class NettyServer {
     private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(16);
 
     private NettyReceiverCallback callback;
-    private ChannelInitializer<SocketChannel> channel_initializer;
 
-
-    public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback, int MAX_FRAME_LENGTH, int LENGTH_OF_FIELD) {
+    public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
-
-        channel_initializer = new ChannelInitializer<SocketChannel>() {
-            @Override
-            public void initChannel(SocketChannel ch) throws Exception {
-                ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));
-                //Its own thread so it wont block IO thread
-                ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler());
-            }
-        };
     }
 
     public void shutdown() throws InterruptedException {
@@ -64,19 +53,25 @@ public class NettyServer {
         b.group(boss_group, worker_group)
                 .channel(EpollServerSocketChannel.class)
                 .localAddress(bind_addr, port)
-                .childHandler(channel_initializer)
+                .childHandler(new ChannelInit(this.callback))
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .option(ChannelOption.RCVBUF_ALLOCATOR, new AdaptiveRecvByteBufAllocator(200, 128 * 1024, 512 * 1024))
                 .childOption(ChannelOption.TCP_NODELAY, true)
-                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+//                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(128 * 1024, 512 * 1024));
         b.bind().sync();
 
     }
 
-
+    @ChannelHandler.Sharable
     private class ReceiverHandler extends SimpleChannelInboundHandler<ByteBuf> {
+        private NettyReceiverCallback cb;
+
+        public ReceiverHandler(NettyReceiverCallback cb) {
+            this.cb = cb;
+        }
+
         @Override
         public void channelRead0(ChannelHandlerContext ctx, ByteBuf msg) throws Exception {
             int offset = msg.readInt();
@@ -85,14 +80,31 @@ public class NettyServer {
             msg.readBytes(data);
             InetSocketAddress soc = (InetSocketAddress) ctx.channel().remoteAddress();
             Address sender = new IpAddress(soc.getAddress(), soc.getPort());
-            callback.onReceive(sender, data, offset, length);
+            cb.onReceive(sender, data, offset, length);
         }
 
         @Override
         public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            callback.onError(cause);
+            cb.onError(cause);
         }
 
+    }
+
+    private class ChannelInit extends ChannelInitializer<SocketChannel> {
+        private NettyReceiverCallback cb;
+        public final int MAX_FRAME_LENGTH = Integer.MAX_VALUE; //  not sure if this is a great idea
+        public final int LENGTH_OF_FIELD = Integer.BYTES;
+
+        public ChannelInit(NettyReceiverCallback callback) {
+            cb = callback;
+        }
+
+        @Override
+        protected void initChannel(SocketChannel ch) throws Exception {
+            ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));
+            //Its own thread so it wont block IO thread
+            ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler(cb));
+        }
     }
 
     public Address getLocalAddress() {
