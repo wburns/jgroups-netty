@@ -2,10 +2,13 @@ package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
+import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.unix.Errors;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
@@ -27,16 +30,19 @@ public class NettyServer {
 
     private static final int CORES = Runtime.getRuntime().availableProcessors();
     //TODO: decide the optimal amount of threads for each loop
-    private EventLoopGroup boss_group = new EpollEventLoopGroup(); // Handles incoming connections
-    private EventLoopGroup worker_group = new EpollEventLoopGroup();
+    private EventLoopGroup boss_group; // Handles incoming connections
+    private EventLoopGroup worker_group;
     private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(16);
-
+    private boolean isNativeTransport;
     private NettyReceiverCallback callback;
 
-    public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback) {
+    public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback, boolean isNativeTransport) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
+        this.isNativeTransport = isNativeTransport;
+        boss_group =    isNativeTransport ? new EpollEventLoopGroup() : new NioEventLoopGroup();
+        worker_group =  isNativeTransport ? new EpollEventLoopGroup() : new NioEventLoopGroup();
     }
 
     public Address getLocalAddress() {
@@ -54,16 +60,21 @@ public class NettyServer {
         //https://netty.io/wiki/native-transports.html
         ServerBootstrap b = new ServerBootstrap();
         b.group(boss_group, worker_group)
-                .channel(EpollServerSocketChannel.class)
                 .localAddress(bind_addr, port)
                 .childHandler(new ChannelInit(this.callback))
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
-                .option(ChannelOption.RCVBUF_ALLOCATOR, new AdaptiveRecvByteBufAllocator(200, 128 * 1024, 512 * 1024))
-                .childOption(ChannelOption.TCP_NODELAY, true)
-//                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(128 * 1024, 512 * 1024));
-        return b.bind();
+//                .option(ChannelOption.RCVBUF_ALLOCATOR, new AdaptiveRecvByteBufAllocator(200, 64 * 1024, 128 * 1024))
+                .childOption(ChannelOption.TCP_NODELAY, false)
+                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
+//                .childOption(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(32 * 1024, 64 * 1024));
+        if (isNativeTransport) {
+            b.channel(EpollServerSocketChannel.class);
+        } else {
+            b.channel(NioServerSocketChannel.class);
+        }
+
+        return b.bind().sync();
 
     }
 

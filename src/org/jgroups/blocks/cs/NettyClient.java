@@ -2,10 +2,12 @@ package org.jgroups.blocks.cs;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.*;
+import io.netty.channel.epoll.EpollServerDomainSocketChannel;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.group.ChannelGroup;
 import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.handler.codec.bytes.ByteArrayDecoder;
 import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.handler.flush.FlushConsolidationHandler;
@@ -30,18 +32,19 @@ public class NettyClient {
     private Map<SocketAddress, ChannelId> channelIds;
     private Bootstrap bootstrap;
 
-    public NettyClient(EventLoopGroup group, InetAddress local_addr, int max_timeout_interval) {
+    public NettyClient(EventLoopGroup group, InetAddress local_addr, int max_timeout_interval, boolean isNativeTransport) {
 
         channelIds = new HashMap<>();
         connections = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
 
         bootstrap = new Bootstrap();
         bootstrap.group(group)
-                .channel(EpollSocketChannel.class)
                 .localAddress(local_addr, 0)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, max_timeout_interval)
-                .option(ChannelOption.SO_REUSEADDR, true)
-                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(512 * 1024, 1024 * 1024))
+//                .option(ChannelOption.SO_REUSEADDR, true)
+//                .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(32 * 1024, 64 * 1024))
+                .option(ChannelOption.AUTO_READ,false)
+//                .option(ChannelOption.SO_SNDBUF,64*1024)
                 .option(ChannelOption.TCP_NODELAY, true)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override
@@ -52,10 +55,14 @@ public class NettyClient {
                         ch.pipeline().addLast(new ClientHandler());
                     }
                 });
+        if (isNativeTransport)
+            bootstrap.channel(EpollSocketChannel.class);
+        else
+            bootstrap.channel(NioSocketChannel.class);
     }
 
-    public NettyClient(EventLoopGroup group, InetAddress local_addr) {
-        this(group, local_addr, 1000);
+    public NettyClient(EventLoopGroup group, InetAddress local_addr, boolean isNativeTransport) {
+        this(group, local_addr, 1000, isNativeTransport);
     }
 
     public void send(IpAddress dest, byte[] data, int offset, int length) throws InterruptedException {

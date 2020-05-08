@@ -2,7 +2,6 @@ package org.jgroups.protocols;
 
 
 import io.netty.channel.ChannelFuture;
-import io.netty.channel.EventLoopGroup;
 import io.netty.channel.unix.Errors;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
@@ -85,6 +84,8 @@ public class Netty extends TP {
     }
 
     private boolean createServer() throws InterruptedException {
+        boolean isNative = true;
+        //TODO: put the client interface inside the server to encapsulate a 'TCP connection'
         try {
             server = new NettyServer(bind_addr, bind_port, new NettyReceiverCallback() {
                 @Override
@@ -96,13 +97,13 @@ public class Netty extends TP {
                 public void onError(Throwable ex) {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
-            });
+            }, isNative);
             ChannelFuture cf = server.run();
-            client = new NettyClient(cf.channel().eventLoop(), bind_addr);
+            client = new NettyClient(cf.channel().eventLoop(), bind_addr, isNative);
             selfAddress = new IpAddress(bind_addr, bind_port);
+            System.out.println("created with " + bind_port);
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             server.shutdown();
-            exception.printStackTrace();
             return false;
         }
         return true;
