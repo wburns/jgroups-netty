@@ -28,11 +28,9 @@ import org.jgroups.stack.IpAddress;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
-import java.lang.reflect.Array;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -111,7 +109,7 @@ public class NettyServer {
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .childOption(ChannelOption.TCP_NODELAY, false);
+                .childOption(ChannelOption.TCP_NODELAY, true);
         if (isNativeTransport) {
             inboundBootstrap.channel(EpollServerSocketChannel.class);
         } else {
@@ -132,7 +130,9 @@ public class NettyServer {
 
         if (opened != null) {
             Channel writeChannel = allChannels.find(opened);
-            writeChannel.writeAndFlush(packed);
+            writeChannel.eventLoop().execute(() -> {
+                writeChannel.writeAndFlush(packed);
+            });
         } else {
             ChannelFuture cf = outgoingBootstrap.connect(new InetSocketAddress(destAddr.getIpAddress(), destAddr.getPort()));
             cf.addListener((ChannelFutureListener) channelFuture -> {
@@ -179,15 +179,15 @@ public class NettyServer {
             int addrLen = msgbuf.readInt();
             byte[] data = new byte[length];
             byte[] addr = new byte[addrLen];
-            msgbuf.readBytes(addr,0,addrLen);
-            msgbuf.readBytes(data,0,length);
+            msgbuf.readBytes(addr, 0, addrLen);
+            msgbuf.readBytes(data, 0, length);
 
             IpAddress ad = new IpAddress();
             ad.readFrom(new DataInputStream(new ByteArrayInputStream(addr)));
             //TODO: should the sender be the client or server address from remote
             cb.onReceive(sender, data, offset, length);
             msgbuf.release();
-            updateMap(ctx.channel(),ad);
+            updateMap(ctx.channel(), ad);
 
         }
 
