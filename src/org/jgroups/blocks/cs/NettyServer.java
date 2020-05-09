@@ -46,7 +46,7 @@ public class NettyServer {
     //TODO: decide the optimal amount of threads for each loop
     private EventLoopGroup boss_group; // Handles incoming connections
     private EventLoopGroup worker_group;
-    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(16);
+    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(2);
     private boolean isNativeTransport;
     private NettyReceiverCallback callback;
     private Bootstrap outgoingBootstrap;
@@ -65,17 +65,13 @@ public class NettyServer {
 
         this.isNativeTransport = isNativeTransport;
         boss_group = isNativeTransport ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
-        worker_group = isNativeTransport ? new EpollEventLoopGroup() : new NioEventLoopGroup();
-        inactive = new ChannelInactiveListener() {
-
-            @Override
-            public void channelInactive(Channel channel) {
-                InetSocketAddress addr = (InetSocketAddress) channel.remoteAddress();
-                IpAddress ipAddress = new IpAddress(addr.getAddress(), addr.getPort());
-                ChannelId id = ipAddressChannelIdMap.remove(ipAddress);
-                assert id == channel.id() : "Wrong channel removed";
-                allChannels.remove(channel);
-            }
+        worker_group = isNativeTransport ? new EpollEventLoopGroup(16) : new NioEventLoopGroup(16);
+        inactive = channel -> {
+            InetSocketAddress addr = (InetSocketAddress) channel.remoteAddress();
+            IpAddress ipAddress = new IpAddress(addr.getAddress(), addr.getPort());
+            ChannelId id = ipAddressChannelIdMap.remove(ipAddress);
+            assert id == channel.id() : "Wrong channel removed";
+            allChannels.remove(channel);
         };
         outgoingBootstrap = new Bootstrap();
         outgoingBootstrap.group(worker_group)
@@ -127,7 +123,6 @@ public class NettyServer {
             return;
         }
         ChannelId opened = ipAddressChannelIdMap.getOrDefault(destAddr, null);
-
         if (opened != null) {
             Channel writeChannel = allChannels.find(opened);
             writeChannel.eventLoop().execute(() -> {
@@ -217,7 +212,7 @@ public class NettyServer {
 
         @Override
         protected void initChannel(SocketChannel ch) throws Exception {
-            ch.pipeline().addFirst(new FlushConsolidationHandler());//outbound and inbound (1)
+            ch.pipeline().addFirst(new FlushConsolidationHandler(1000*32,true));//outbound and inbound (1)
             ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));//inbound head (2)
             ch.pipeline().addLast(new ByteArrayEncoder()); //outbound tail (3)
 //            ch.pipeline().addLast(new ReceiverHandler(cb, lifecycleListener));//inbound tail (4)
