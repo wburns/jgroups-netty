@@ -1,23 +1,27 @@
 package org.jgroups.protocols;
 
 
-import io.netty.channel.ChannelFuture;
+import io.netty.buffer.ByteBuf;
+import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.unix.Errors;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
-import org.jgroups.blocks.cs.NettyClient;
 import org.jgroups.blocks.cs.NettyReceiverCallback;
 import org.jgroups.blocks.cs.NettyServer;
 import org.jgroups.stack.IpAddress;
+import org.jgroups.util.ByteArray;
 
+import java.io.*;
+import java.lang.reflect.Array;
 import java.net.BindException;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 /***
  * @author Baizel Mathew
  */
 public class Netty extends TP {
 
-    private NettyClient client;
     private NettyServer server;
     private IpAddress selfAddress = null;
 
@@ -28,7 +32,8 @@ public class Netty extends TP {
 
     @Override
     public void sendMulticast(byte[] data, int offset, int length) throws Exception {
-        sendToMembers(members, data, offset, length);
+//        sendToMembers(members, data, offset, length);
+        _send(null, data, offset, length);
     }
 
     @Override
@@ -73,12 +78,13 @@ public class Netty extends TP {
         return server != null ? (PhysicalAddress) server.getLocalAddress() : null;
     }
 
-
     private void _send(Address dest, byte[] data, int offset, int length) throws Exception {
-        IpAddress destAddr = (IpAddress) dest;
-        if (destAddr != selfAddress)
-            client.send(destAddr, data, offset, length);
-        else {
+        IpAddress destAddr = dest != null ? (IpAddress) dest : null;
+
+        if (destAddr != selfAddress) {
+            server.send(destAddr, data, offset, length);
+
+        }else {
             //TODO: loop back
         }
     }
@@ -98,14 +104,31 @@ public class Netty extends TP {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
             }, isNative);
-            ChannelFuture cf = server.run();
-            client = new NettyClient(cf.channel().eventLoop(), bind_addr, isNative);
-            selfAddress = new IpAddress(bind_addr, bind_port);
-            System.out.println("created with " + bind_port);
+            server.run();
+            selfAddress = (IpAddress)server.getLocalAddress();
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             server.shutdown();
             return false;
         }
         return true;
     }
+
+    public static byte[] pack(byte[] data, int offset, int length, IpAddress replyAddr) throws IOException {
+        //Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length
+        ByteArrayOutputStream replyAddByteStream = new ByteArrayOutputStream();
+        DataOutputStream dStraem = new DataOutputStream(replyAddByteStream);
+        replyAddr.writeTo(dStraem);
+
+        int allocSize = Integer.BYTES + Integer.BYTES + Integer.BYTES + length +Integer.BYTES+ replyAddByteStream.size();
+//        ByteBuf buf = PooledByteBufAllocator.DEFAULT.buffer(allocSize);
+        ByteBuffer buf = ByteBuffer.allocate(allocSize);
+        buf.putInt(allocSize - Integer.BYTES);
+        buf.putInt(offset);
+        buf.putInt(length);
+        buf.putInt(replyAddByteStream.size());
+        buf.put(replyAddByteStream.toByteArray());
+        buf.put(Arrays.copyOfRange(data,offset,length));
+        return buf.array();
+    }
+
 }
