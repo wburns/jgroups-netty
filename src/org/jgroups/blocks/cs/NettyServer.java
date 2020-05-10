@@ -49,7 +49,6 @@ public class NettyServer {
     private NettyReceiverCallback callback;
     private Bootstrap outgoingBootstrap;
     private ChannelInactiveListener inactive;
-//    private NettyClient client;
 
     private ChannelGroup allChannels;
     private Map<IpAddress, ChannelId> ipAddressChannelIdMap;

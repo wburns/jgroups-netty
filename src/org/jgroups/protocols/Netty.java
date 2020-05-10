@@ -4,6 +4,7 @@ package org.jgroups.protocols;
 import io.netty.channel.unix.Errors;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
+import org.jgroups.annotations.Property;
 import org.jgroups.blocks.cs.NettyReceiverCallback;
 import org.jgroups.blocks.cs.NettyServer;
 import org.jgroups.stack.IpAddress;
@@ -14,10 +15,11 @@ import java.net.BindException;
  * @author Baizel Mathew
  */
 public class Netty extends TP {
+    @Property(description="Use INative packages when available")
+    protected boolean use_native_transport;
 
     private NettyServer server;
     private IpAddress selfAddress = null;
-    private boolean isNative = false;
 
 
     @Override
@@ -83,7 +85,6 @@ public class Netty extends TP {
     }
 
     private boolean createServer() throws InterruptedException {
-        //TODO: put the client interface inside the server to encapsulate a 'TCP connection'
         try {
             server = new NettyServer(bind_addr, bind_port, new NettyReceiverCallback() {
                 @Override
@@ -95,7 +96,7 @@ public class Netty extends TP {
                 public void onError(Throwable ex) {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
-            }, isNative);
+            }, use_native_transport);
             server.run();
             selfAddress = (IpAddress) server.getLocalAddress();
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
