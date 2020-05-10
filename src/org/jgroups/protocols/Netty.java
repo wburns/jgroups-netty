@@ -1,21 +1,14 @@
 package org.jgroups.protocols;
 
 
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.unix.Errors;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.blocks.cs.NettyReceiverCallback;
 import org.jgroups.blocks.cs.NettyServer;
 import org.jgroups.stack.IpAddress;
-import org.jgroups.util.ByteArray;
 
-import java.io.*;
-import java.lang.reflect.Array;
 import java.net.BindException;
-import java.nio.ByteBuffer;
-import java.util.Arrays;
 
 /***
  * @author Baizel Mathew
@@ -24,6 +17,8 @@ public class Netty extends TP {
 
     private NettyServer server;
     private IpAddress selfAddress = null;
+    private boolean isNative = false;
+
 
     @Override
     public boolean supportsMulticasting() {
@@ -32,7 +27,6 @@ public class Netty extends TP {
 
     @Override
     public void sendMulticast(byte[] data, int offset, int length) throws Exception {
-//        sendToMembers(members, data, offset, length);
         _send(null, data, offset, length);
     }
 
@@ -64,7 +58,6 @@ public class Netty extends TP {
     public void stop() {
         try {
             server.shutdown();
-//            client.close();
         } catch (InterruptedException e) {
             e.printStackTrace();
             log.error("Failed to shutdown server");
@@ -84,13 +77,12 @@ public class Netty extends TP {
         if (destAddr != selfAddress) {
             server.send(destAddr, data, offset, length);
 
-        }else {
+        } else {
             //TODO: loop back
         }
     }
 
     private boolean createServer() throws InterruptedException {
-        boolean isNative = true;
         //TODO: put the client interface inside the server to encapsulate a 'TCP connection'
         try {
             server = new NettyServer(bind_addr, bind_port, new NettyReceiverCallback() {
@@ -105,30 +97,12 @@ public class Netty extends TP {
                 }
             }, isNative);
             server.run();
-            selfAddress = (IpAddress)server.getLocalAddress();
+            selfAddress = (IpAddress) server.getLocalAddress();
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             server.shutdown();
             return false;
         }
         return true;
-    }
-
-    public static byte[] pack(byte[] data, int offset, int length, IpAddress replyAddr) throws IOException {
-        //Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length
-        ByteArrayOutputStream replyAddByteStream = new ByteArrayOutputStream();
-        DataOutputStream dStraem = new DataOutputStream(replyAddByteStream);
-        replyAddr.writeTo(dStraem);
-
-        int allocSize = Integer.BYTES + Integer.BYTES + Integer.BYTES + length +Integer.BYTES+ replyAddByteStream.size();
-//        ByteBuf buf = PooledByteBufAllocator.DEFAULT.buffer(allocSize);
-        ByteBuffer buf = ByteBuffer.allocate(allocSize);
-        buf.putInt(allocSize - Integer.BYTES);
-        buf.putInt(offset);
-        buf.putInt(length);
-        buf.putInt(replyAddByteStream.size());
-        buf.put(replyAddByteStream.toByteArray());
-        buf.put(Arrays.copyOfRange(data,offset,length));
-        return buf.array();
     }
 
 }

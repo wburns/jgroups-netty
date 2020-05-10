@@ -22,15 +22,13 @@ import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 import io.netty.util.concurrent.GlobalEventExecutor;
 import org.jgroups.Address;
-import org.jgroups.protocols.Netty;
 import org.jgroups.stack.IpAddress;
 
-import java.io.ByteArrayInputStream;
-import java.io.DataInputStream;
-import java.io.IOException;
+import java.io.*;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -46,7 +44,7 @@ public class NettyServer {
     //TODO: decide the optimal amount of threads for each loop
     private EventLoopGroup boss_group; // Handles incoming connections
     private EventLoopGroup worker_group;
-    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(2);
+    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
     private boolean isNativeTransport;
     private NettyReceiverCallback callback;
     private Bootstrap outgoingBootstrap;
@@ -65,13 +63,10 @@ public class NettyServer {
 
         this.isNativeTransport = isNativeTransport;
         boss_group = isNativeTransport ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
-        worker_group = isNativeTransport ? new EpollEventLoopGroup(16) : new NioEventLoopGroup(16);
+        worker_group = isNativeTransport ? new EpollEventLoopGroup(4) : new NioEventLoopGroup(4);
         inactive = channel -> {
-            InetSocketAddress addr = (InetSocketAddress) channel.remoteAddress();
-            IpAddress ipAddress = new IpAddress(addr.getAddress(), addr.getPort());
-            ChannelId id = ipAddressChannelIdMap.remove(ipAddress);
-            assert id == channel.id() : "Wrong channel removed";
             allChannels.remove(channel);
+            ipAddressChannelIdMap.values().remove(channel.id());
         };
         outgoingBootstrap = new Bootstrap();
         outgoingBootstrap.group(worker_group)
@@ -116,30 +111,38 @@ public class NettyServer {
     }
 
     public void send(IpAddress destAddr, byte[] data, int offset, int length) throws InterruptedException, IOException {
-        byte[] packed = Netty.pack(data, offset, length, (IpAddress) getLocalAddress());
+        byte[] packed = pack(data, offset, length, (IpAddress) getLocalAddress());
         //TODO: check if this is right behavior
         if (destAddr == null) {
             allChannels.writeAndFlush(packed);
             return;
         }
         ChannelId opened = ipAddressChannelIdMap.getOrDefault(destAddr, null);
-        if (opened != null) {
-            Channel writeChannel = allChannels.find(opened);
-            writeChannel.eventLoop().execute(() -> {
-                writeChannel.writeAndFlush(packed);
-            });
-        } else {
-            ChannelFuture cf = outgoingBootstrap.connect(new InetSocketAddress(destAddr.getIpAddress(), destAddr.getPort()));
-            cf.addListener((ChannelFutureListener) channelFuture -> {
-                if (channelFuture.isSuccess()) {
-                    Channel connected = channelFuture.channel();
-                    updateMap(connected, destAddr);
-                    connected.eventLoop().execute(() -> {
-                        connected.writeAndFlush(packed);
-                    });
-                }
-            });
-        }
+        if (opened != null)
+            writeToChannel(allChannels.find(opened), packed);
+        else
+            connectAndSend(destAddr, packed);
+
+    }
+
+    private void writeToChannel(Channel ch, byte[] data) {
+        ch.eventLoop().execute(() -> ch.writeAndFlush(data, ch.voidPromise()));
+    }
+
+    public void connectAndSend(IpAddress addr, byte[] data) {
+        ChannelFuture cf = outgoingBootstrap.connect(new InetSocketAddress(addr.getIpAddress(), addr.getPort()));
+        cf.addListener((ChannelFutureListener) channelFuture -> {
+            if (channelFuture.isSuccess()) {
+                Channel ch = channelFuture.channel();
+                writeToChannel(ch, data);
+                updateMap(ch, addr);
+            }
+        });
+    }
+
+    public void connectAndSend(IpAddress addr) throws IOException {
+        //Send an empty message so receiver knows reply addr
+        connectAndSend(addr, pack(new byte[0], 0, 0, (IpAddress) getLocalAddress()));
     }
 
     private void updateMap(Channel connected, IpAddress destAddr) {
@@ -147,6 +150,13 @@ public class NettyServer {
         if (id != null && id == connected.id())
             return;
 
+        if (id != null) {
+            //if we already have a connection and then this will only be true in one of the nodes thus only closing one connection instead of two
+            if (connected.remoteAddress().equals(new InetSocketAddress(destAddr.getIpAddress(), destAddr.getPort()))) {
+                connected.close();
+            }
+            return;
+        }
         ipAddressChannelIdMap.put(destAddr, connected.id());
         allChannels.add(connected);
     }
@@ -160,7 +170,6 @@ public class NettyServer {
             super();
             this.cb = cb;
             this.lifecycleListener = lifecycleListener;
-
         }
 
         @Override
@@ -212,10 +221,9 @@ public class NettyServer {
 
         @Override
         protected void initChannel(SocketChannel ch) throws Exception {
-            ch.pipeline().addFirst(new FlushConsolidationHandler(1000*32,true));//outbound and inbound (1)
+            ch.pipeline().addFirst(new FlushConsolidationHandler(1000 * 32, true));//outbound and inbound (1)
             ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));//inbound head (2)
             ch.pipeline().addLast(new ByteArrayEncoder()); //outbound tail (3)
-//            ch.pipeline().addLast(new ReceiverHandler(cb, lifecycleListener));//inbound tail (4)
             ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler(cb, lifecycleListener)); // (4)
             // inbound ---> 1, 2, 4
             // outbound --> 3,1
@@ -224,6 +232,24 @@ public class NettyServer {
 
     private interface ChannelInactiveListener {
         void channelInactive(Channel channel);
+    }
+
+    private static byte[] pack(byte[] data, int offset, int length, IpAddress replyAddr) throws IOException {
+        //Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length
+        ByteArrayOutputStream replyAddByteStream = new ByteArrayOutputStream();
+        DataOutputStream dStream = new DataOutputStream(replyAddByteStream);
+        replyAddr.writeTo(dStream);
+
+        int allocSize = Integer.BYTES + Integer.BYTES + Integer.BYTES + length + Integer.BYTES + replyAddByteStream.size();
+//        ByteBuf buf = PooledByteBufAllocator.DEFAULT.buffer(allocSize);
+        ByteBuffer buf = ByteBuffer.allocate(allocSize);
+        buf.putInt(allocSize - Integer.BYTES);
+        buf.putInt(offset);
+        buf.putInt(length);
+        buf.putInt(replyAddByteStream.size());
+        buf.put(replyAddByteStream.toByteArray());
+        buf.put(data, offset, length);
+        return buf.array();
     }
 }
 
