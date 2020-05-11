@@ -1,26 +1,46 @@
 package org.jgroups.protocols;
 
-import io.netty.channel.nio.NioEventLoop;
-import io.netty.channel.nio.NioEventLoopGroup;
+
+import io.netty.channel.unix.Errors;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
-import org.jgroups.blocks.cs.NettyClient;
+import org.jgroups.annotations.Property;
 import org.jgroups.blocks.cs.NettyReceiverCallback;
 import org.jgroups.blocks.cs.NettyServer;
 import org.jgroups.stack.IpAddress;
 
 import java.net.BindException;
-import java.util.Collection;
 
 /***
  * @author Baizel Mathew
  */
-public class Netty extends BasicTCP {
-    public final int MAX_FRAME_LENGTH = 65000;
-    public final int LENGTH_OF_FIELD = Integer.BYTES;
+public class Netty extends TP {
+    @Property(description="Use INative packages when available")
+    protected boolean use_native_transport;
 
-    private NettyClient client;
     private NettyServer server;
+    private IpAddress selfAddress = null;
+
+
+    @Override
+    public boolean supportsMulticasting() {
+        return false;
+    }
+
+    @Override
+    public void sendMulticast(byte[] data, int offset, int length) throws Exception {
+        _send(null, data, offset, length);
+    }
+
+    @Override
+    public void sendUnicast(PhysicalAddress dest, byte[] data, int offset, int length) throws Exception {
+        _send(dest, data, offset, length);
+    }
+
+    @Override
+    public String getInfo() {
+        return null;
+    }
 
     @Override
     public void start() throws Exception {
@@ -31,9 +51,7 @@ public class Netty extends BasicTCP {
             isServerCreated = createServer();
             //TODO: Fix this to get valid port numbers
         }
-        if (isServerCreated)
-            client = new NettyClient(bind_addr,MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
-        else
+        if (!isServerCreated)
             throw new BindException("No port found to bind within port range");
         super.start();
     }
@@ -42,7 +60,6 @@ public class Netty extends BasicTCP {
     public void stop() {
         try {
             server.shutdown();
-//            client.close();
         } catch (InterruptedException e) {
             e.printStackTrace();
             log.error("Failed to shutdown server");
@@ -56,20 +73,15 @@ public class Netty extends BasicTCP {
         return server != null ? (PhysicalAddress) server.getLocalAddress() : null;
     }
 
-    @Override
-    public String printConnections() {
-        //TODO
-        return null;
-    }
+    private void _send(Address dest, byte[] data, int offset, int length) throws Exception {
+        IpAddress destAddr = dest != null ? (IpAddress) dest : null;
 
-    @Override
-    public void send(Address dest, byte[] data, int offset, int length) throws Exception {
-        client.send((IpAddress) dest, data, offset, length);
-    }
+        if (destAddr != selfAddress) {
+            server.send(destAddr, data, offset, length);
 
-    @Override
-    public void retainAll(Collection<Address> members) {
-//        client.retainAll(members);
+        } else {
+            //TODO: loop back
+        }
     }
 
     private boolean createServer() throws InterruptedException {
@@ -85,14 +97,11 @@ public class Netty extends BasicTCP {
                 public void onError(Throwable ex) {
                     log.error("Error Received at Netty transport " + ex.toString());
                 }
-            }, MAX_FRAME_LENGTH,LENGTH_OF_FIELD);
+            }, use_native_transport);
             server.run();
-        } catch (BindException exception) {
+            selfAddress = (IpAddress) server.getLocalAddress();
+        } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             server.shutdown();
-            return false;
-        } catch (InterruptedException e) {
-            server.shutdown();
-            e.printStackTrace();
             return false;
         }
         return true;
