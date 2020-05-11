@@ -73,7 +73,7 @@
         <dependency>
             <groupId>org.jgroups</groupId>
             <artifactId>jgroups</artifactId>
-            <version>5.0.0.Alpha4</version>
+            <version>${version.jgroups}</version>
         </dependency>
     </dependencies>
 </project>
