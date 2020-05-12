@@ -49,6 +49,8 @@ public class NettyServer {
     private NettyReceiverCallback callback;
     private Bootstrap outgoingBootstrap;
     private ChannelInactiveListener inactive;
+    private byte[] replyAdder = null;
+//    private ByteBuffer sendBuffer = ByteBuffer.allocate(6500);
 
     private ChannelGroup allChannels;
     private Map<IpAddress, ChannelId> ipAddressChannelIdMap;
@@ -107,10 +109,19 @@ public class NettyServer {
         }
         inboundBootstrap.bind().sync();
 
+        try {
+            ByteArrayOutputStream replyAddByteStream = new ByteArrayOutputStream();
+            DataOutputStream dStream = new DataOutputStream(replyAddByteStream);
+            new IpAddress(bind_addr, port).writeTo(dStream);
+            replyAdder = replyAddByteStream.toByteArray();
+        } catch (IOException e) {
+            //Nodes will have to use two channels per connection
+            e.printStackTrace();
+        }
     }
 
     public void send(IpAddress destAddr, byte[] data, int offset, int length) throws InterruptedException, IOException {
-        byte[] packed = pack(data, offset, length, (IpAddress) getLocalAddress());
+        byte[] packed = pack(data, offset, length, replyAdder);
         //TODO: check if this is right behavior
         if (destAddr == null) {
             allChannels.writeAndFlush(packed);
@@ -141,7 +152,7 @@ public class NettyServer {
 
     public void connectAndSend(IpAddress addr) throws IOException {
         //Send an empty message so receiver knows reply addr
-        connectAndSend(addr, pack(new byte[0], 0, 0, (IpAddress) getLocalAddress()));
+        connectAndSend(addr, pack(new byte[0], 0, 0, replyAdder));
     }
 
     private void updateMap(Channel connected, IpAddress destAddr) {
@@ -164,6 +175,7 @@ public class NettyServer {
     private class ReceiverHandler extends ChannelInboundHandlerAdapter {
         private NettyReceiverCallback cb;
         private ChannelInactiveListener lifecycleListener;
+        private byte[] buffer = new byte[65200];
 
         public ReceiverHandler(NettyReceiverCallback cb, ChannelInactiveListener lifecycleListener) {
             super();
@@ -177,18 +189,20 @@ public class NettyServer {
             Address sender = new IpAddress(soc.getAddress(), soc.getPort());
 
             ByteBuf msgbuf = (ByteBuf) msg;
-            int offset = msgbuf.readInt();
             int length = msgbuf.readInt();
             int addrLen = msgbuf.readInt();
-            byte[] data = new byte[length];
-            byte[] addr = new byte[addrLen];
-            msgbuf.readBytes(addr, 0, addrLen);
-            msgbuf.readBytes(data, 0, length);
+
+            if (buffer.length < length + addrLen) {
+                buffer = new byte[length + addrLen];
+            }
+
+            msgbuf.readBytes(buffer, 0, addrLen);
+            msgbuf.readBytes(buffer, addrLen, length);
 
             IpAddress ad = new IpAddress();
-            ad.readFrom(new DataInputStream(new ByteArrayInputStream(addr)));
+            ad.readFrom(new DataInputStream(new ByteArrayInputStream(buffer, 0, addrLen)));
             //TODO: should the sender be the client or server address from remote
-            cb.onReceive(sender, data, offset, length);
+            cb.onReceive(sender, buffer, addrLen, length);
             msgbuf.release();
             updateMap(ctx.channel(), ad);
 
@@ -233,20 +247,14 @@ public class NettyServer {
         void channelInactive(Channel channel);
     }
 
-    private static byte[] pack(byte[] data, int offset, int length, IpAddress replyAddr) throws IOException {
-        //Integer.BYTES + Integer.BYTES + Integer.BYTES + data.length
-        ByteArrayOutputStream replyAddByteStream = new ByteArrayOutputStream();
-        DataOutputStream dStream = new DataOutputStream(replyAddByteStream);
-        replyAddr.writeTo(dStream);
-
-        int allocSize = Integer.BYTES + Integer.BYTES + Integer.BYTES + length + Integer.BYTES + replyAddByteStream.size();
-//        ByteBuf buf = PooledByteBufAllocator.DEFAULT.buffer(allocSize);
+    private static byte[] pack(byte[] data, int offset, int length, byte[] replyAdder) throws IOException {
+        int allocSize = Integer.BYTES + Integer.BYTES + length + Integer.BYTES + replyAdder.length;
         ByteBuffer buf = ByteBuffer.allocate(allocSize);
         buf.putInt(allocSize - Integer.BYTES);
-        buf.putInt(offset);
+//        buf.putInt( Integer.BYTES + length + Integer.BYTES + replyAdder.length);
         buf.putInt(length);
-        buf.putInt(replyAddByteStream.size());
-        buf.put(replyAddByteStream.toByteArray());
+        buf.putInt(replyAdder.length);
+        buf.put(replyAdder);
         buf.put(data, offset, length);
         return buf.array();
     }

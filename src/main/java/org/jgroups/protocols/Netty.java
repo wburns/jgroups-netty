@@ -90,7 +90,9 @@ public class Netty extends TP {
                 @Override
                 public void onReceive(Address sender, byte[] msg, int offset, int length) {
                     //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive
-                    receive(sender, msg, offset, length);
+                    synchronized (this) {
+                        receive(sender, msg, offset, length);
+                    }
                 }
 
                 @Override
