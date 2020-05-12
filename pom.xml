@@ -56,7 +56,7 @@
             </releases>
             <snapshots>
                 <enabled>true</enabled>
-                <updatePolicy>awlays</updatePolicy>
+                <updatePolicy>always</updatePolicy>
             </snapshots>
         </repository>
 
