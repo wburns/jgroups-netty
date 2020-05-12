@@ -9,14 +9,13 @@
         xmlns="urn:org:jgroups"
         xsi:schemaLocation="urn:org:jgroups http://www.jgroups.org/schema/jgroups.xsd">
     <netty.Netty bind_port="7800"
-         use_native_transport="false"
-         bind_addr="192.168.1.12"
+         use_native_transport="true"
          thread_pool.min_threads="0"
          thread_pool.max_threads="200"
          thread_pool.keep_alive_time="30000"/>
 
     <TCPPING async_discovery="true"
-             initial_hosts="${jgroups.tcpping.initial_hosts:192.168.1.12[7800],192.168.1.12[7801]}"
+             initial_hosts="${jgroups.tcpping.initial_hosts:10.128.0.4[7800],10.128.0.3[7800]}"
              port_range="2"/>
     <MERGE3  min_interval="10000"
              max_interval="30000"/>
