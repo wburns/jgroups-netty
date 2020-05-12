@@ -1,4 +1,4 @@
-package org.jgroups.blocks.cs;
+package org.jgroups.blocks.cs.netty;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
