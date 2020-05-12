@@ -15,7 +15,7 @@ import java.net.BindException;
  * @author Baizel Mathew
  */
 public class Netty extends TP {
-    @Property(description="Use INative packages when available")
+    @Property(description = "Use Native packages when available")
     protected boolean use_native_transport;
 
     private NettyServer server;

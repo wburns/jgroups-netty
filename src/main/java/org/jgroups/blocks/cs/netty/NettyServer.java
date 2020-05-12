@@ -175,7 +175,6 @@ public class NettyServer {
     private class ReceiverHandler extends ChannelInboundHandlerAdapter {
         private NettyReceiverCallback cb;
         private ChannelInactiveListener lifecycleListener;
-        private byte[] buffer = new byte[65200];
 
         public ReceiverHandler(NettyReceiverCallback cb, ChannelInactiveListener lifecycleListener) {
             super();
@@ -191,10 +190,7 @@ public class NettyServer {
             ByteBuf msgbuf = (ByteBuf) msg;
             int length = msgbuf.readInt();
             int addrLen = msgbuf.readInt();
-
-            if (buffer.length < length + addrLen) {
-                buffer = new byte[length + addrLen];
-            }
+            byte[] buffer = new byte[length + addrLen];
 
             msgbuf.readBytes(buffer, 0, addrLen);
             msgbuf.readBytes(buffer, addrLen, length);
