@@ -2,11 +2,11 @@ package org.jgroups.protocols;
 
 
 import io.netty.channel.unix.Errors;
-import org.jgroups.blocks.cs.NettyReceiverCallback;
-import org.jgroups.blocks.cs.NettyServer;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.annotations.Property;
+import org.jgroups.blocks.cs.NettyReceiverCallback;
+import org.jgroups.blocks.cs.NettyServer;
 import org.jgroups.stack.IpAddress;
 
 import java.net.BindException;
@@ -15,7 +15,7 @@ import java.net.BindException;
  * @author Baizel Mathew
  */
 public class Netty extends TP {
-    @Property(description="Use INative packages when available")
+    @Property(description = "Use INative packages when available")
     protected boolean use_native_transport;
 
     private NettyServer server;
@@ -90,9 +90,8 @@ public class Netty extends TP {
                 @Override
                 public void onReceive(Address sender, byte[] msg, int offset, int length) {
                     //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive
-                    synchronized (this) {
-                        receive(sender, msg, offset, length);
-                    }
+                    receive(sender, msg, offset, length);
+
                 }
 
                 @Override
