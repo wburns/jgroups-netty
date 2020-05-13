@@ -15,11 +15,9 @@ import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.channel.unix.Errors;
 import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
-import io.netty.util.concurrent.GlobalEventExecutor;
 import org.jgroups.Address;
 import org.jgroups.stack.IpAddress;
 
@@ -121,7 +119,9 @@ public class NettyServer {
     }
 
     private void writeToChannel(Channel ch, ByteBuf data) {
-        ch.eventLoop().execute(() -> ch.writeAndFlush(data, ch.voidPromise()));
+        ch.eventLoop().execute(() -> {
+            ch.writeAndFlush(data, ch.voidPromise());
+        });
     }
 
     public void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
@@ -162,7 +162,7 @@ public class NettyServer {
     private class ReceiverHandler extends ChannelInboundHandlerAdapter {
         private NettyReceiverCallback cb;
         private ChannelInactiveListener lifecycleListener;
-        private  byte[] buffer = new byte[65200];
+        private byte[] buffer = new byte[65200];
 
         public ReceiverHandler(NettyReceiverCallback cb, ChannelInactiveListener lifecycleListener) {
             super();
@@ -181,7 +181,7 @@ public class NettyServer {
 
             IpAddress sender = new IpAddress();
             sender.readFrom(new DataInputStream(new ByteArrayInputStream(buffer, 0, addrLen)));
-            synchronized (this ) {
+            synchronized (this) {
                 cb.onReceive(sender, buffer, addrLen, length);
             }
             msgbuf.release();
@@ -190,7 +190,7 @@ public class NettyServer {
         }
 
         @Override
-        public void channelInactive(ChannelHandlerContext ctx){
+        public void channelInactive(ChannelHandlerContext ctx) {
             lifecycleListener.channelInactive(ctx.channel());
         }
 
@@ -217,10 +217,9 @@ public class NettyServer {
         protected void initChannel(SocketChannel ch) {
             ch.pipeline().addFirst(new FlushConsolidationHandler(1000 * 32, true));//outbound and inbound (1)
             ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));//inbound head (2)
-            ch.pipeline().addLast(new ByteArrayEncoder()); //outbound tail (3)
             ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler(cb, lifecycleListener)); // (4)
             // inbound ---> 1, 2, 4
-            // outbound --> 3,1
+            // outbound --> 1
         }
     }
 
