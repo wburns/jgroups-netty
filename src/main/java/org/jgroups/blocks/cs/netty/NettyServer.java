@@ -9,8 +9,6 @@ import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.epoll.EpollSocketChannel;
-import io.netty.channel.group.ChannelGroup;
-import io.netty.channel.group.DefaultChannelGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
@@ -47,23 +45,19 @@ public class NettyServer {
     private Bootstrap outgoingBootstrap;
     private ChannelInactiveListener inactive;
     private byte[] replyAdder = null;
-
-    private ChannelGroup allChannels;
-    private Map<IpAddress, ChannelId> ipAddressChannelIdMap;
+    private Map<IpAddress, Channel> ipAddressChannelMap;
 
     public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback, boolean isNativeTransport) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
-        ipAddressChannelIdMap = new HashMap<>();
-        allChannels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
+        ipAddressChannelMap = new HashMap<>();
 
         this.isNativeTransport = isNativeTransport;
         boss_group = isNativeTransport ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
         worker_group = isNativeTransport ? new EpollEventLoopGroup(0) : new NioEventLoopGroup();
         inactive = channel -> {
-            allChannels.remove(channel);
-            ipAddressChannelIdMap.values().remove(channel.id());
+            ipAddressChannelMap.values().remove(channel);
         };
         outgoingBootstrap = new Bootstrap();
         outgoingBootstrap.group(worker_group)
@@ -117,11 +111,10 @@ public class NettyServer {
     }
 
     public void send(IpAddress destAddr, byte[] data, int offset, int length) {
-        ChannelId opened = ipAddressChannelIdMap.getOrDefault(destAddr, null);
+        Channel opened = ipAddressChannelMap.getOrDefault(destAddr, null);
         if (opened != null) {
-            Channel ch = allChannels.find(opened);
-            ByteBuf packed = pack(ch.alloc(), data, offset, length, replyAdder);
-            writeToChannel(ch, packed);
+            ByteBuf packed = pack(opened.alloc(), data, offset, length, replyAdder);
+            writeToChannel(opened, packed);
         } else
             connectAndSend(destAddr, data, offset, length);
 
@@ -151,19 +144,18 @@ public class NettyServer {
     }
 
     private void updateMap(Channel connected, IpAddress destAddr) {
-        ChannelId id = ipAddressChannelIdMap.get(destAddr);
-        if (id != null && id == connected.id())
+        Channel channel = ipAddressChannelMap.get(destAddr);
+        if (channel != null && channel.id() == connected.id())
             return;
 
-        if (id != null) {
+        if (channel != null) {
             //if we already have a connection and then this will only be true in one of the nodes thus only closing one connection instead of two
             if (connected.remoteAddress().equals(new InetSocketAddress(destAddr.getIpAddress(), destAddr.getPort()))) {
                 connected.close();
             }
             return;
         }
-        ipAddressChannelIdMap.put(destAddr, connected.id());
-        allChannels.add(connected);
+        ipAddressChannelMap.put(destAddr, connected);
     }
 
     @ChannelHandler.Sharable
@@ -198,7 +190,7 @@ public class NettyServer {
         }
 
         @Override
-        public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        public void channelInactive(ChannelHandlerContext ctx){
             lifecycleListener.channelInactive(ctx.channel());
         }
 
@@ -222,7 +214,7 @@ public class NettyServer {
         }
 
         @Override
-        protected void initChannel(SocketChannel ch) throws Exception {
+        protected void initChannel(SocketChannel ch) {
             ch.pipeline().addFirst(new FlushConsolidationHandler(1000 * 32, true));//outbound and inbound (1)
             ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));//inbound head (2)
             ch.pipeline().addLast(new ByteArrayEncoder()); //outbound tail (3)
