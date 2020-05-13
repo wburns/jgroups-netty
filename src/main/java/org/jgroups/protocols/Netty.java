@@ -29,7 +29,7 @@ public class Netty extends TP {
 
     @Override
     public void sendMulticast(byte[] data, int offset, int length) throws Exception {
-        _send(null, data, offset, length);
+        sendToMembers(members, data, offset, length);
     }
 
     @Override
