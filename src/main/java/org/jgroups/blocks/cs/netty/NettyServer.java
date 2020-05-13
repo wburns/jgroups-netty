@@ -3,6 +3,7 @@ package org.jgroups.blocks.cs.netty;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
@@ -28,7 +29,6 @@ import java.io.*;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -39,9 +39,6 @@ public class NettyServer {
 
     private int port;
     private InetAddress bind_addr;
-
-    private static final int CORES = Runtime.getRuntime().availableProcessors();
-    //TODO: decide the optimal amount of threads for each loop
     private EventLoopGroup boss_group; // Handles incoming connections
     private EventLoopGroup worker_group;
     private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
@@ -50,7 +47,6 @@ public class NettyServer {
     private Bootstrap outgoingBootstrap;
     private ChannelInactiveListener inactive;
     private byte[] replyAdder = null;
-//    private ByteBuffer sendBuffer = ByteBuffer.allocate(6500);
 
     private ChannelGroup allChannels;
     private Map<IpAddress, ChannelId> ipAddressChannelIdMap;
@@ -64,7 +60,7 @@ public class NettyServer {
 
         this.isNativeTransport = isNativeTransport;
         boss_group = isNativeTransport ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
-        worker_group = isNativeTransport ? new EpollEventLoopGroup(4) : new NioEventLoopGroup(4);
+        worker_group = isNativeTransport ? new EpollEventLoopGroup(0) : new NioEventLoopGroup();
         inactive = channel -> {
             allChannels.remove(channel);
             ipAddressChannelIdMap.values().remove(channel.id());
@@ -120,39 +116,38 @@ public class NettyServer {
         }
     }
 
-    public void send(IpAddress destAddr, byte[] data, int offset, int length) throws InterruptedException, IOException {
-        byte[] packed = pack(data, offset, length, replyAdder);
-        //TODO: check if this is right behavior
-        if (destAddr == null) {
-            allChannels.writeAndFlush(packed);
-            return;
-        }
+    public void send(IpAddress destAddr, byte[] data, int offset, int length) {
         ChannelId opened = ipAddressChannelIdMap.getOrDefault(destAddr, null);
-        if (opened != null)
-            writeToChannel(allChannels.find(opened), packed);
-        else
-            connectAndSend(destAddr, packed);
+        if (opened != null) {
+            Channel ch = allChannels.find(opened);
+            ByteBuf packed = pack(ch.alloc(), data, offset, length, replyAdder);
+            writeToChannel(ch, packed);
+        } else
+            connectAndSend(destAddr, data, offset, length);
 
     }
 
-    private void writeToChannel(Channel ch, byte[] data) {
+    private void writeToChannel(Channel ch, ByteBuf data) {
         ch.eventLoop().execute(() -> ch.writeAndFlush(data, ch.voidPromise()));
     }
 
-    public void connectAndSend(IpAddress addr, byte[] data) {
+    public void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
         ChannelFuture cf = outgoingBootstrap.connect(new InetSocketAddress(addr.getIpAddress(), addr.getPort()));
+        // Putting pack(...) inside the lambda causes unexpected behaviour.
+        // Both send and receive works fine but it does not get passed up properly on the receivers(JGroups receive) end
+        ByteBuf packed = pack(cf.channel().alloc(), data, offset, length, replyAdder);
         cf.addListener((ChannelFutureListener) channelFuture -> {
             if (channelFuture.isSuccess()) {
                 Channel ch = channelFuture.channel();
-                writeToChannel(ch, data);
+                writeToChannel(ch, packed);
                 updateMap(ch, addr);
             }
         });
     }
 
-    public void connectAndSend(IpAddress addr) throws IOException {
+    public void connectAndSend(IpAddress addr) {
         //Send an empty message so receiver knows reply addr
-        connectAndSend(addr, pack(new byte[0], 0, 0, replyAdder));
+        connectAndSend(addr, null, 0, 0);
     }
 
     private void updateMap(Channel connected, IpAddress destAddr) {
@@ -175,6 +170,7 @@ public class NettyServer {
     private class ReceiverHandler extends ChannelInboundHandlerAdapter {
         private NettyReceiverCallback cb;
         private ChannelInactiveListener lifecycleListener;
+        private  byte[] buffer = new byte[65200];
 
         public ReceiverHandler(NettyReceiverCallback cb, ChannelInactiveListener lifecycleListener) {
             super();
@@ -184,23 +180,20 @@ public class NettyServer {
 
         @Override
         public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-            InetSocketAddress soc = (InetSocketAddress) ctx.channel().remoteAddress();
-            Address sender = new IpAddress(soc.getAddress(), soc.getPort());
-
             ByteBuf msgbuf = (ByteBuf) msg;
             int length = msgbuf.readInt();
             int addrLen = msgbuf.readInt();
-            byte[] buffer = new byte[length + addrLen];
 
             msgbuf.readBytes(buffer, 0, addrLen);
             msgbuf.readBytes(buffer, addrLen, length);
 
-            IpAddress ad = new IpAddress();
-            ad.readFrom(new DataInputStream(new ByteArrayInputStream(buffer, 0, addrLen)));
-            //TODO: should the sender be the client or server address from remote
-            cb.onReceive(sender, buffer, addrLen, length);
+            IpAddress sender = new IpAddress();
+            sender.readFrom(new DataInputStream(new ByteArrayInputStream(buffer, 0, addrLen)));
+            synchronized (this ) {
+                cb.onReceive(sender, buffer, addrLen, length);
+            }
             msgbuf.release();
-            updateMap(ctx.channel(), ad);
+            updateMap(ctx.channel(), sender);
 
         }
 
@@ -243,16 +236,16 @@ public class NettyServer {
         void channelInactive(Channel channel);
     }
 
-    private static byte[] pack(byte[] data, int offset, int length, byte[] replyAdder) throws IOException {
+    private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {
         int allocSize = Integer.BYTES + Integer.BYTES + length + Integer.BYTES + replyAdder.length;
-        ByteBuffer buf = ByteBuffer.allocate(allocSize);
-        buf.putInt(allocSize - Integer.BYTES);
-//        buf.putInt( Integer.BYTES + length + Integer.BYTES + replyAdder.length);
-        buf.putInt(length);
-        buf.putInt(replyAdder.length);
-        buf.put(replyAdder);
-        buf.put(data, offset, length);
-        return buf.array();
+        ByteBuf buf = allocator.buffer(allocSize);
+        buf.writeInt(allocSize - Integer.BYTES);
+        buf.writeInt(length);
+        buf.writeInt(replyAdder.length);
+        buf.writeBytes(replyAdder);
+        if (data != null)
+            buf.writeBytes(data, offset, length);
+        return buf;
     }
 }
 
