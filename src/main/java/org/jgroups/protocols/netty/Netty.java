@@ -2,10 +2,10 @@ package org.jgroups.protocols.netty;
 
 import io.netty.channel.unix.Errors;
 import netty.listeners.NettyReceiverListener;
-import org.jgroups.blocks.cs.netty.NettyServer;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.annotations.Property;
+import org.jgroups.blocks.cs.netty.NettyServer;
 import org.jgroups.protocols.TP;
 import org.jgroups.stack.IpAddress;
 
@@ -90,9 +90,7 @@ public class Netty extends TP {
                 @Override
                 public void onReceive(Address sender, byte[] msg, int offset, int length) {
                     //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive
-                    synchronized (this) {
-                        receive(sender, msg, offset, length);
-                    }
+                    receive(sender, msg, offset, length);
                 }
 
                 @Override

@@ -21,7 +21,9 @@ import netty.utils.PipelineChannelInitializer;
 import org.jgroups.Address;
 import org.jgroups.stack.IpAddress;
 
-import java.io.*;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -33,17 +35,17 @@ import java.util.Map;
  */
 public class NettyServer {
 
+    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
+    private final Bootstrap outgoingBootstrap = new Bootstrap();
+    private final Map<IpAddress, Channel> ipAddressChannelMap = new HashMap<>();
+    private byte[] replyAdder = null;
     private int port;
     private InetAddress bind_addr;
     private EventLoopGroup boss_group; // Handles incoming connections
     private EventLoopGroup worker_group;
-    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
     private boolean isNativeTransport;
     private NettyReceiverListener callback;
-    private Bootstrap outgoingBootstrap;
     private ChannelLifecycleListener lifecycleListener;
-    private byte[] replyAdder = null;
-    private Map<IpAddress, Channel> ipAddressChannelMap;
 
     public NettyServer(InetAddress bind_addr, int port, NettyReceiverListener callback, boolean isNativeTransport) {
         this.port = port;
@@ -52,7 +54,6 @@ public class NettyServer {
         this.isNativeTransport = isNativeTransport;
         boss_group = isNativeTransport ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
         worker_group = isNativeTransport ? new EpollEventLoopGroup() : new NioEventLoopGroup();
-        ipAddressChannelMap = new HashMap<>();
 
         lifecycleListener = new ChannelLifecycleListener() {
             @Override
@@ -66,9 +67,8 @@ public class NettyServer {
             }
         };
 
-        outgoingBootstrap = new Bootstrap();
         outgoingBootstrap.group(worker_group)
-                .handler(new PipelineChannelInitializer(this.callback, lifecycleListener,separateWorkerGroup))
+                .handler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
                 .localAddress(bind_addr, 0)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
                 .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
@@ -79,21 +79,11 @@ public class NettyServer {
             outgoingBootstrap.channel(NioSocketChannel.class);
     }
 
-    public Address getLocalAddress() {
-        return new IpAddress(bind_addr, port);
-    }
-
-    public void shutdown() throws InterruptedException {
-        boss_group.shutdownGracefully();
-        worker_group.shutdownGracefully();
-        separateWorkerGroup.shutdownGracefully();
-    }
-
     public void run() throws InterruptedException, BindException, Errors.NativeIoException {
         ServerBootstrap inboundBootstrap = new ServerBootstrap();
         inboundBootstrap.group(boss_group, worker_group)
                 .localAddress(bind_addr, port)
-                .childHandler(new PipelineChannelInitializer(this.callback, lifecycleListener,separateWorkerGroup))
+                .childHandler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
@@ -119,17 +109,10 @@ public class NettyServer {
     public void send(IpAddress destAddr, byte[] data, int offset, int length) {
         Channel opened = ipAddressChannelMap.getOrDefault(destAddr, null);
         if (opened != null) {
-            ByteBuf packed = pack(opened.alloc(), data, offset, length, replyAdder);
-            writeToChannel(opened, packed);
+            writeToChannel(opened, data, offset, length);
         } else
             connectAndSend(destAddr, data, offset, length);
 
-    }
-
-    private void writeToChannel(Channel ch, ByteBuf data) {
-        ch.eventLoop().execute(() -> {
-            ch.writeAndFlush(data, ch.voidPromise());
-        });
     }
 
     public void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
@@ -147,8 +130,29 @@ public class NettyServer {
     }
 
     public void connectAndSend(IpAddress addr) {
-        //Send an empty message so receiver knows reply addr
+        //Send an empty message so receiver knows reply addr. otherwise Receiver will make another connection
         connectAndSend(addr, null, 0, 0);
+    }
+
+    public Address getLocalAddress() {
+        return new IpAddress(bind_addr, port);
+    }
+
+    public void shutdown() throws InterruptedException {
+        boss_group.shutdownGracefully();
+        worker_group.shutdownGracefully();
+        separateWorkerGroup.shutdownGracefully();
+    }
+
+    private void writeToChannel(Channel ch, byte[] data, int offset, int length) {
+        ByteBuf packed = pack(ch.alloc(), data, offset, length, replyAdder);
+        writeToChannel(ch, packed);
+    }
+
+    private void writeToChannel(Channel ch, ByteBuf data) {
+        ch.eventLoop().execute(() -> {
+            ch.writeAndFlush(data, ch.voidPromise());
+        });
     }
 
     private void updateMap(Channel connected, IpAddress destAddr) {
