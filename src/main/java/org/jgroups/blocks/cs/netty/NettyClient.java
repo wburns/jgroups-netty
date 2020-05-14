@@ -1,4 +1,4 @@
-//package org.jgroups.blocks.cs;
+//package org.jgroups.blocks.cs.netty;
 //
 //import io.netty.bootstrap.Bootstrap;
 //import io.netty.buffer.PooledByteBufAllocator;
@@ -15,7 +15,7 @@
 //import io.netty.handler.flush.FlushConsolidationHandler;
 //import io.netty.util.concurrent.FutureListener;
 //import io.netty.util.concurrent.GlobalEventExecutor;
-//import org.jgroups.protocols.Netty;
+//import org.jgroups.protocols.netty.Netty;
 //import org.jgroups.stack.IpAddress;
 //
 //import java.io.IOException;

@@ -1,4 +1,4 @@
-package org.jgroups.blocks.cs;
+package org.jgroups.blocks.cs.netty;
 
 import org.jgroups.Address;
 

@@ -1,12 +1,12 @@
-package org.jgroups.protocols;
-
+package org.jgroups.protocols.netty;
 
 import io.netty.channel.unix.Errors;
-import org.jgroups.blocks.cs.NettyReceiverCallback;
-import org.jgroups.blocks.cs.NettyServer;
+import org.jgroups.blocks.cs.netty.NettyReceiverCallback;
+import org.jgroups.blocks.cs.netty.NettyServer;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.annotations.Property;
+import org.jgroups.protocols.TP;
 import org.jgroups.stack.IpAddress;
 
 import java.net.BindException;
