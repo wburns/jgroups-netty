@@ -1,7 +1,7 @@
 package org.jgroups.protocols.netty;
 
 import io.netty.channel.unix.Errors;
-import org.jgroups.blocks.cs.netty.NettyReceiverCallback;
+import netty.listeners.NettyReceiverListener;
 import org.jgroups.blocks.cs.netty.NettyServer;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
@@ -86,7 +86,7 @@ public class Netty extends TP {
 
     private boolean createServer() throws InterruptedException {
         try {
-            server = new NettyServer(bind_addr, bind_port, new NettyReceiverCallback() {
+            server = new NettyServer(bind_addr, bind_port, new NettyReceiverListener() {
                 @Override
                 public void onReceive(Address sender, byte[] msg, int offset, int length) {
                     //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive

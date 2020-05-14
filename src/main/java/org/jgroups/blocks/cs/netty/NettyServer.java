@@ -10,14 +10,14 @@ import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.epoll.EpollSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.channel.unix.Errors;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.flush.FlushConsolidationHandler;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
+import netty.listeners.ChannelLifecycleListener;
+import netty.listeners.NettyReceiverListener;
+import netty.utils.PipelineChannelInitializer;
 import org.jgroups.Address;
 import org.jgroups.stack.IpAddress;
 
@@ -39,27 +39,36 @@ public class NettyServer {
     private EventLoopGroup worker_group;
     private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
     private boolean isNativeTransport;
-    private NettyReceiverCallback callback;
+    private NettyReceiverListener callback;
     private Bootstrap outgoingBootstrap;
-    private ChannelInactiveListener inactive;
+    private ChannelLifecycleListener lifecycleListener;
     private byte[] replyAdder = null;
     private Map<IpAddress, Channel> ipAddressChannelMap;
 
-    public NettyServer(InetAddress bind_addr, int port, NettyReceiverCallback callback, boolean isNativeTransport) {
+    public NettyServer(InetAddress bind_addr, int port, NettyReceiverListener callback, boolean isNativeTransport) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
-        ipAddressChannelMap = new HashMap<>();
-
         this.isNativeTransport = isNativeTransport;
         boss_group = isNativeTransport ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
-        worker_group = isNativeTransport ? new EpollEventLoopGroup(0) : new NioEventLoopGroup();
-        inactive = channel -> {
-            ipAddressChannelMap.values().remove(channel);
+        worker_group = isNativeTransport ? new EpollEventLoopGroup() : new NioEventLoopGroup();
+        ipAddressChannelMap = new HashMap<>();
+
+        lifecycleListener = new ChannelLifecycleListener() {
+            @Override
+            public void channelInactive(Channel channel) {
+                ipAddressChannelMap.values().remove(channel);
+            }
+
+            @Override
+            public void channelRead(Channel channel, IpAddress sender) {
+                updateMap(channel, sender);
+            }
         };
+
         outgoingBootstrap = new Bootstrap();
         outgoingBootstrap.group(worker_group)
-                .handler(new PipeLine(this.callback, inactive))
+                .handler(new PipelineChannelInitializer(this.callback, lifecycleListener,separateWorkerGroup))
                 .localAddress(bind_addr, 0)
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
                 .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
@@ -68,7 +77,6 @@ public class NettyServer {
             outgoingBootstrap.channel(EpollSocketChannel.class);
         else
             outgoingBootstrap.channel(NioSocketChannel.class);
-//    }
     }
 
     public Address getLocalAddress() {
@@ -85,7 +93,7 @@ public class NettyServer {
         ServerBootstrap inboundBootstrap = new ServerBootstrap();
         inboundBootstrap.group(boss_group, worker_group)
                 .localAddress(bind_addr, port)
-                .childHandler(new PipeLine(this.callback, inactive))
+                .childHandler(new PipelineChannelInitializer(this.callback, lifecycleListener,separateWorkerGroup))
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
@@ -127,7 +135,7 @@ public class NettyServer {
     public void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
         ChannelFuture cf = outgoingBootstrap.connect(new InetSocketAddress(addr.getIpAddress(), addr.getPort()));
         // Putting pack(...) inside the lambda causes unexpected behaviour.
-        // Both send and receive works fine but it does not get passed up properly on the receivers(JGroups receive) end
+        // Both send and receive works fine but it does not get passed up properly, might be something to do with the buffer
         ByteBuf packed = pack(cf.channel().alloc(), data, offset, length, replyAdder);
         cf.addListener((ChannelFutureListener) channelFuture -> {
             if (channelFuture.isSuccess()) {
@@ -156,75 +164,6 @@ public class NettyServer {
             return;
         }
         ipAddressChannelMap.put(destAddr, connected);
-    }
-
-    @ChannelHandler.Sharable
-    private class ReceiverHandler extends ChannelInboundHandlerAdapter {
-        private NettyReceiverCallback cb;
-        private ChannelInactiveListener lifecycleListener;
-        private byte[] buffer = new byte[65200];
-
-        public ReceiverHandler(NettyReceiverCallback cb, ChannelInactiveListener lifecycleListener) {
-            super();
-            this.cb = cb;
-            this.lifecycleListener = lifecycleListener;
-        }
-
-        @Override
-        public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
-            ByteBuf msgbuf = (ByteBuf) msg;
-            int length = msgbuf.readInt();
-            int addrLen = msgbuf.readInt();
-
-            msgbuf.readBytes(buffer, 0, addrLen);
-            msgbuf.readBytes(buffer, addrLen, length);
-
-            IpAddress sender = new IpAddress();
-            sender.readFrom(new DataInputStream(new ByteArrayInputStream(buffer, 0, addrLen)));
-            synchronized (this) {
-                cb.onReceive(sender, buffer, addrLen, length);
-            }
-            msgbuf.release();
-            updateMap(ctx.channel(), sender);
-
-        }
-
-        @Override
-        public void channelInactive(ChannelHandlerContext ctx) {
-            lifecycleListener.channelInactive(ctx.channel());
-        }
-
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            cb.onError(cause);
-        }
-
-    }
-
-    private class PipeLine extends ChannelInitializer<SocketChannel> {
-        private NettyReceiverCallback cb;
-        private ChannelInactiveListener lifecycleListener;
-
-        public final int MAX_FRAME_LENGTH = Integer.MAX_VALUE; //  not sure if this is a great idea
-        public final int LENGTH_OF_FIELD = Integer.BYTES;
-
-        public PipeLine(NettyReceiverCallback cb, ChannelInactiveListener lifecycleListener) {
-            this.cb = cb;
-            this.lifecycleListener = lifecycleListener;
-        }
-
-        @Override
-        protected void initChannel(SocketChannel ch) {
-            ch.pipeline().addFirst(new FlushConsolidationHandler(1000 * 32, true));//outbound and inbound (1)
-            ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));//inbound head (2)
-            ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler(cb, lifecycleListener)); // (4)
-            // inbound ---> 1, 2, 4
-            // outbound --> 1
-        }
-    }
-
-    private interface ChannelInactiveListener {
-        void channelInactive(Channel channel);
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {
