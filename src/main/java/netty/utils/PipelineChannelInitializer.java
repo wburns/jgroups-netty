@@ -25,7 +25,7 @@ public class PipelineChannelInitializer extends ChannelInitializer<SocketChannel
     @Override
     protected void initChannel(SocketChannel ch) {
         ch.pipeline().addFirst(new FlushConsolidationHandler(1000 * 32, true));//outbound and inbound (1)
-        ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD, 0, LENGTH_OF_FIELD));//inbound head (2)
+        ch.pipeline().addLast(new LengthFieldBasedFrameDecoder(MAX_FRAME_LENGTH, 0, LENGTH_OF_FIELD));//inbound head (2)
         ch.pipeline().addLast(separateWorkerGroup, "handlerThread", new ReceiverHandler(nettyReceiverListener, lifecycleListener)); // (4)
         // inbound ---> 1, 2, 4
         // outbound --> 1

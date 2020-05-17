@@ -26,16 +26,17 @@ public class ReceiverHandler extends ChannelInboundHandlerAdapter {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         ByteBuf msgbuf = (ByteBuf) msg;
-        int length = msgbuf.readInt();
+        int totalLength = msgbuf.readInt();
         int addrLen = msgbuf.readInt();
+        int dataLen = totalLength - Integer.BYTES - addrLen;
 
         msgbuf.readBytes(buffer, 0, addrLen);
-        msgbuf.readBytes(buffer, addrLen, length);
+        msgbuf.readBytes(buffer, addrLen, dataLen);
 
         IpAddress sender = new IpAddress();
         sender.readFrom(new DataInputStream(new ByteArrayInputStream(buffer, 0, addrLen)));
         synchronized (this) {
-            nettyReceiverListener.onReceive(sender, buffer, addrLen, length);
+            nettyReceiverListener.onReceive(sender, buffer, addrLen, dataLen);
         }
         msgbuf.release();
         lifecycleListener.channelRead(ctx.channel(),sender);

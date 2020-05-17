@@ -33,7 +33,7 @@ import java.util.Map;
 /***
  * @author Baizel Mathew
  */
-public class NettyServer {
+public class NettyConnection {
 
     private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
     private final Bootstrap outgoingBootstrap = new Bootstrap();
@@ -47,7 +47,7 @@ public class NettyServer {
     private NettyReceiverListener callback;
     private ChannelLifecycleListener lifecycleListener;
 
-    public NettyServer(InetAddress bind_addr, int port, NettyReceiverListener callback, boolean isNativeTransport) {
+    public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, boolean isNativeTransport) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
@@ -171,10 +171,10 @@ public class NettyServer {
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {
-        int allocSize = Integer.BYTES + Integer.BYTES + length + Integer.BYTES + replyAdder.length;
+        int allocSize = Integer.BYTES  + length + Integer.BYTES + replyAdder.length;
         ByteBuf buf = allocator.buffer(allocSize);
-        buf.writeInt(allocSize - Integer.BYTES);
-        buf.writeInt(length);
+        // size of data + size replyAddr.length field  + space for reply addr bytes = total frame size
+        buf.writeInt(length + replyAdder.length + Integer.BYTES);  //encode frame size and data length
         buf.writeInt(replyAdder.length);
         buf.writeBytes(replyAdder);
         if (data != null)

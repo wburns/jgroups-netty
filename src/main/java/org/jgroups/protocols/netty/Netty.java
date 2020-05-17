@@ -5,7 +5,7 @@ import netty.listeners.NettyReceiverListener;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.annotations.Property;
-import org.jgroups.blocks.cs.netty.NettyServer;
+import org.jgroups.blocks.cs.netty.NettyConnection;
 import org.jgroups.protocols.TP;
 import org.jgroups.stack.IpAddress;
 
@@ -18,7 +18,7 @@ public class Netty extends TP {
     @Property(description = "Use Native packages when available")
     protected boolean use_native_transport;
 
-    private NettyServer server;
+    private NettyConnection server;
     private IpAddress selfAddress = null;
 
 
@@ -86,7 +86,7 @@ public class Netty extends TP {
 
     private boolean createServer() throws InterruptedException {
         try {
-            server = new NettyServer(bind_addr, bind_port, new NettyReceiverListener() {
+            server = new NettyConnection(bind_addr, bind_port, new NettyReceiverListener() {
                 @Override
                 public void onReceive(Address sender, byte[] msg, int offset, int length) {
                     //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive
