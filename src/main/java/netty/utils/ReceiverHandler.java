@@ -11,6 +11,9 @@ import org.jgroups.stack.IpAddress;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 
+/***
+ * @author Baizel Mathew
+ */
 @ChannelHandler.Sharable
 public class ReceiverHandler extends ChannelInboundHandlerAdapter {
     private NettyReceiverListener nettyReceiverListener;
@@ -39,9 +42,10 @@ public class ReceiverHandler extends ChannelInboundHandlerAdapter {
             nettyReceiverListener.onReceive(sender, buffer, addrLen, dataLen);
         }
         msgbuf.release();
-        lifecycleListener.channelRead(ctx.channel(),sender);
+        lifecycleListener.channelRead(ctx.channel(), sender);
 
     }
+
     @Override
     public void channelInactive(ChannelHandlerContext ctx) {
         lifecycleListener.channelInactive(ctx.channel());

@@ -1,6 +1,7 @@
 package org.jgroups.protocols.netty;
 
 import io.netty.channel.unix.Errors;
+import io.netty.util.ResourceLeakDetector;
 import netty.listeners.NettyReceiverListener;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
@@ -17,6 +18,9 @@ import java.net.BindException;
 public class Netty extends TP {
     @Property(description = "Use Native packages when available")
     protected boolean use_native_transport;
+
+    @Property(description = "Use Native packages when available")
+    protected String resource_leak_detector_level;
 
     private NettyConnection server;
     private IpAddress selfAddress = null;
@@ -44,6 +48,8 @@ public class Netty extends TP {
 
     @Override
     public void start() throws Exception {
+        ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.valueOf(resource_leak_detector_level));
+
         boolean isServerCreated = createServer();
         while (!isServerCreated && bind_port < bind_port + port_range) {
             //Keep trying to create server until

@@ -106,7 +106,7 @@ public class NettyConnection {
         }
     }
 
-    public void send(IpAddress destAddr, byte[] data, int offset, int length) {
+    public final void send(IpAddress destAddr, byte[] data, int offset, int length) {
         Channel opened = ipAddressChannelMap.getOrDefault(destAddr, null);
         if (opened != null) {
             writeToChannel(opened, data, offset, length);
@@ -115,7 +115,7 @@ public class NettyConnection {
 
     }
 
-    public void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
+    public final void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
         ChannelFuture cf = outgoingBootstrap.connect(new InetSocketAddress(addr.getIpAddress(), addr.getPort()));
         // Putting pack(...) inside the lambda causes unexpected behaviour.
         // Both send and receive works fine but it does not get passed up properly, might be something to do with the buffer
@@ -129,7 +129,7 @@ public class NettyConnection {
         });
     }
 
-    public void connectAndSend(IpAddress addr) {
+    public final void connectAndSend(IpAddress addr) {
         //Send an empty message so receiver knows reply addr. otherwise Receiver will make another connection
         connectAndSend(addr, null, 0, 0);
     }
@@ -171,7 +171,7 @@ public class NettyConnection {
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {
-        int allocSize = Integer.BYTES  + length + Integer.BYTES + replyAdder.length;
+        int allocSize = Integer.BYTES + length + Integer.BYTES + replyAdder.length;
         ByteBuf buf = allocator.buffer(allocSize);
         // size of data + size replyAddr.length field  + space for reply addr bytes = total frame size
         buf.writeInt(length + replyAdder.length + Integer.BYTES);  //encode frame size and data length

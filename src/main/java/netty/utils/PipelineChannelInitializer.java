@@ -8,6 +8,9 @@ import io.netty.util.concurrent.EventExecutorGroup;
 import netty.listeners.ChannelLifecycleListener;
 import netty.listeners.NettyReceiverListener;
 
+/***
+ * @author Baizel Mathew
+ */
 public class PipelineChannelInitializer extends ChannelInitializer<SocketChannel> {
     private NettyReceiverListener nettyReceiverListener;
     private ChannelLifecycleListener lifecycleListener;
@@ -19,7 +22,7 @@ public class PipelineChannelInitializer extends ChannelInitializer<SocketChannel
     public PipelineChannelInitializer(NettyReceiverListener nettyReceiverListener, ChannelLifecycleListener lifecycleListener, EventExecutorGroup separateWorkerGroup) {
         this.nettyReceiverListener = nettyReceiverListener;
         this.lifecycleListener = lifecycleListener;
-        this.separateWorkerGroup=separateWorkerGroup;
+        this.separateWorkerGroup = separateWorkerGroup;
     }
 
     @Override
