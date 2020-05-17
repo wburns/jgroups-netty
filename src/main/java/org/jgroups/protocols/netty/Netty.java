@@ -1,11 +1,12 @@
 package org.jgroups.protocols.netty;
 
 import io.netty.channel.unix.Errors;
-import org.jgroups.blocks.cs.netty.NettyReceiverCallback;
-import org.jgroups.blocks.cs.netty.NettyServer;
+import io.netty.util.ResourceLeakDetector;
+import netty.listeners.NettyReceiverListener;
 import org.jgroups.Address;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.annotations.Property;
+import org.jgroups.blocks.cs.netty.NettyConnection;
 import org.jgroups.protocols.TP;
 import org.jgroups.stack.IpAddress;
 
@@ -15,10 +16,13 @@ import java.net.BindException;
  * @author Baizel Mathew
  */
 public class Netty extends TP {
-    @Property(description="Use INative packages when available")
+    @Property(description = "Use Native packages when available")
     protected boolean use_native_transport;
 
-    private NettyServer server;
+    @Property(description = "Use Native packages when available")
+    protected String resource_leak_detector_level;
+
+    private NettyConnection server;
     private IpAddress selfAddress = null;
 
 
@@ -29,7 +33,7 @@ public class Netty extends TP {
 
     @Override
     public void sendMulticast(byte[] data, int offset, int length) throws Exception {
-        _send(null, data, offset, length);
+        sendToMembers(members, data, offset, length);
     }
 
     @Override
@@ -44,6 +48,8 @@ public class Netty extends TP {
 
     @Override
     public void start() throws Exception {
+        ResourceLeakDetector.setLevel(ResourceLeakDetector.Level.valueOf(resource_leak_detector_level));
+
         boolean isServerCreated = createServer();
         while (!isServerCreated && bind_port < bind_port + port_range) {
             //Keep trying to create server until
@@ -86,13 +92,11 @@ public class Netty extends TP {
 
     private boolean createServer() throws InterruptedException {
         try {
-            server = new NettyServer(bind_addr, bind_port, new NettyReceiverCallback() {
+            server = new NettyConnection(bind_addr, bind_port, new NettyReceiverListener() {
                 @Override
                 public void onReceive(Address sender, byte[] msg, int offset, int length) {
                     //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive
-                    synchronized (this) {
-                        receive(sender, msg, offset, length);
-                    }
+                    receive(sender, msg, offset, length);
                 }
 
                 @Override
