@@ -25,10 +25,10 @@
     </licenses>
 
     <properties>
-        <maven.compiler.source>1.8</maven.compiler.source>
-        <maven.compiler.target>1.8</maven.compiler.target>
-        <version.jgroups>4.2.3.Final</version.jgroups>
-        <version.netty>4.1.49.Final</version.netty>
+        <maven.compiler.source>11</maven.compiler.source>
+        <maven.compiler.target>11</maven.compiler.target>
+        <version.jgroups>5.0.0.Beta1</version.jgroups>
+        <version.netty>4.1.50.Final</version.netty>
     </properties>
     <repositories>
         <repository>
