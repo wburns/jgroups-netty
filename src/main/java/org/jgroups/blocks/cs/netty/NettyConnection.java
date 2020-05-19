@@ -37,11 +37,12 @@ public class NettyConnection {
 
     private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
     private final Bootstrap outgoingBootstrap = new Bootstrap();
+    private final ServerBootstrap inboundBootstrap = new ServerBootstrap();
     private final Map<IpAddress, Channel> ipAddressChannelMap = new HashMap<>();
     private byte[] replyAdder = null;
     private int port;
     private InetAddress bind_addr;
-    private EventLoopGroup boss_group; // Handles incoming connections
+    private EventLoopGroup boss_group; // Only handles incoming connections
     private EventLoopGroup worker_group;
     private boolean isNativeTransport;
     private NettyReceiverListener callback;
@@ -66,33 +67,11 @@ public class NettyConnection {
                 updateMap(channel, sender);
             }
         };
-
-        outgoingBootstrap.group(worker_group)
-                .handler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
-                .localAddress(bind_addr, 0)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
-                .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .option(ChannelOption.TCP_NODELAY, true);
-        if (isNativeTransport)
-            outgoingBootstrap.channel(EpollSocketChannel.class);
-        else
-            outgoingBootstrap.channel(NioSocketChannel.class);
+        configureClient();
+        configureServer();
     }
 
     public void run() throws InterruptedException, BindException, Errors.NativeIoException {
-        ServerBootstrap inboundBootstrap = new ServerBootstrap();
-        inboundBootstrap.group(boss_group, worker_group)
-                .localAddress(bind_addr, port)
-                .childHandler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
-                .option(ChannelOption.SO_REUSEADDR, true)
-                .option(ChannelOption.SO_BACKLOG, 128)
-                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .childOption(ChannelOption.TCP_NODELAY, true);
-        if (isNativeTransport) {
-            inboundBootstrap.channel(EpollServerSocketChannel.class);
-        } else {
-            inboundBootstrap.channel(NioServerSocketChannel.class);
-        }
         inboundBootstrap.bind().sync();
 
         try {
@@ -168,6 +147,35 @@ public class NettyConnection {
             return;
         }
         ipAddressChannelMap.put(destAddr, connected);
+    }
+
+    private void configureClient() {
+        outgoingBootstrap.group(worker_group)
+                .handler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
+                .localAddress(bind_addr, 0)
+                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
+                .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+                .option(ChannelOption.TCP_NODELAY, true);
+        if (isNativeTransport)
+            outgoingBootstrap.channel(EpollSocketChannel.class);
+        else
+            outgoingBootstrap.channel(NioSocketChannel.class);
+
+    }
+
+    private void configureServer() {
+        inboundBootstrap.group(boss_group, worker_group)
+                .localAddress(bind_addr, port)
+                .childHandler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
+                .option(ChannelOption.SO_REUSEADDR, true)
+                .option(ChannelOption.SO_BACKLOG, 128)
+                .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+                .childOption(ChannelOption.TCP_NODELAY, true);
+        if (isNativeTransport) {
+            inboundBootstrap.channel(EpollServerSocketChannel.class);
+        } else {
+            inboundBootstrap.channel(NioServerSocketChannel.class);
+        }
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {
