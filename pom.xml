@@ -29,7 +29,25 @@
         <maven.compiler.target>11</maven.compiler.target>
         <version.jgroups>5.0.0.Beta1</version.jgroups>
         <version.netty>4.1.50.Final</version.netty>
+        <nexus.server.id>jboss-releases-repository</nexus.server.id>
+        <nexus.server.url>https://repository.jboss.org/nexus</nexus.server.url>
+        <nexus.snapshot.server.id>jboss-snapshots-repository</nexus.snapshot.server.id>
+        <nexus.snapshot.server.url>https://repository.jboss.org/nexus/content/repositories/snapshots/</nexus.snapshot.server.url>
     </properties>
+
+    <distributionManagement>
+        <repository>
+            <id>${nexus.server.id}</id>
+            <name>JBoss Releases Repository</name>
+            <url>${nexus.server.url}</url>
+        </repository>
+        <snapshotRepository>
+            <id>${nexus.snapshot.server.id}</id>
+            <url>${nexus.snapshot.server.url}</url>
+        </snapshotRepository>
+    </distributionManagement>
+
+
     <repositories>
         <repository>
             <id>jboss-public-repository-group</id>
