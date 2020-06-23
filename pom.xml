@@ -24,6 +24,13 @@
         </license>
     </licenses>
 
+    <scm>
+        <connection>scm:git:git://github.com/jgroups-extras/jgroups-netty.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/jgroups-extras/jgroups-netty.git</developerConnection>
+        <url>https://github.com/jgroups-extras/jgroups-netty</url>
+        <tag>HEAD</tag>
+    </scm>
+
     <properties>
         <maven.compiler.source>11</maven.compiler.source>
         <maven.compiler.target>11</maven.compiler.target>
