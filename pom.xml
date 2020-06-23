@@ -2,12 +2,11 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.jgroups</groupId>
     <artifactId>jgroups-netty</artifactId>
-    <version>1.0.0.Alpha2-SNAPSHOT</version>
     <packaging>jar</packaging>
-
-    <description>
-        A netty based transport layer for JGroups
-    </description>
+    <name>jgroups-netty</name>
+    <version>1.0.0.Alpha2-SNAPSHOT</version>
+    <description>A netty based transport layer for JGroups</description>
+    <url>http://www.github.com/jgroups-extras/jgroups-netty</url>
 
     <developers>
         <developer>
