@@ -2,7 +2,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.jgroups</groupId>
     <artifactId>jgroups-netty</artifactId>
-    <version>1.0.0.Alpha1</version>
+    <version>1.0.0.Alpha2-SNAPSHOT</version>
     <packaging>jar</packaging>
 
     <description>
@@ -28,7 +28,7 @@
         <connection>scm:git:git://github.com/jgroups-extras/jgroups-netty.git</connection>
         <developerConnection>scm:git:ssh://git@github.com/jgroups-extras/jgroups-netty.git</developerConnection>
         <url>https://github.com/jgroups-extras/jgroups-netty</url>
-        <tag>jgroups-netty-1.0.0.Alpha1</tag>
+        <tag>HEAD</tag>
     </scm>
 
     <properties>
