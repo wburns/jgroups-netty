@@ -8,8 +8,24 @@ Mailing list for questions/issues/comments: [1]
 
 ## Usage
 The JGroups protocol configuration using Netty can be found in `netty.xml`. The `XML` file can then be used as the `-props` field in JGroups.
-By default `use_native_transport` is set to `true` and will require a Unix system to work. To run on other platforms set this field to `false`. If the native system is used then then the required tools and libraries must be installed. Instruction for that can be found [here.](https://netty.io/wiki/native-transports.html#building-the-linux-native-transport)
+By default `use_native_transport` is set to `false` however setting it to `true` will require a Unix system to work. If the native system is used then then the required tools and libraries must be installed. Instruction for that can be found [here.](https://netty.io/wiki/native-transports.html#building-the-linux-native-transport)
 
+Taken from Netty 
+```
+To build the native transport, you need to use Linux with 64-bit kernel 2.6 or higher. Please also install the required tools and libraries:
+
+# RHEL/CentOS/Fedora:
+sudo yum install autoconf automake libtool make tar \
+                 glibc-devel libaio-devel \
+                 libgcc.i686 glibc-devel.i686
+# Debian/Ubuntu:
+sudo apt-get install autoconf automake libtool make tar \
+                     gcc-multilib libaio-dev
+Building the MacOS/BSD native transport
+To build the native transport, you need to use MacOS 10.12 or higher. Please also install the required tools and libraries:
+
+brew install autoconf automake libtool
+```
 ### Build and Run
 Running `./build.sh` will do a maven clean install and copy the dependencies.
 `run.sh` will include the dependencies as part of the java classpath argument and can be used to run JGroups.
