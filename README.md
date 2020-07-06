@@ -1,4 +1,4 @@
-# Jgroups Netty
+# JGroups Netty
 
 **DISCLAIMER**: This project is still experimental and has not been thoroughly tested.
 
