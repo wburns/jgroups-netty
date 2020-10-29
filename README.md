@@ -108,4 +108,26 @@ Difference = ((TCP Throughput - Netty Throughput)/TCP Throughput) * 100
 | Averages | 23.56% | \-3.31% | \-11.44% | 6.73% |
 
 
+
+
+## The Problem with Low Payloads
+It is noteworthy that Netty does not perform well when the payloads are low. The performance is very likely to be low due to the fact that it requires more system calls which is a slow operation. If there are lots of small messages, then there will be lots of system call to flush the message into the network. 
+To solve this problem, we look into the roles Netty's handler and JGroups' bundler play. In this project, some testing has been done to investigate whether Netty’s ability to handle bundling messages is better than JGroups’ ability. To make it explicit, there are four groups. Some results can be found after testing them and comparing the results. The first group is that TCP with JGroups bundler. The second group is TCP without JGroups bundler (It should be configured in the file). The third groups are Netty with JGroups bundler on. The fourth group is Netty without JGroups bundler. 
+
+### Results of Performances with Low Payloads
+| Payload Size | TCP(mb/s) | Netty(mb/s) | Increase | 
+| :------------------: | :------: | :------: | :------: | 
+| 10 B | 0.489 | 0.398 | -18.65% | 
+| 50 B | 2.412 | 1.964 | -18.57% | 
+| 100 B | 4.758 | 3.822 | -19.66% | 
+| 500 B | 20.972 | 17.335 | -17.34% |
+| 1 KB | 40.204 | 32.150 | -20.03% | 
+
+The results confirm the assumption that TCP outperforms Netty when the payload is small.
+
+
+### Results of Performances with/without Bundlers
+The values of differences between with bundlers and without bundlers are actually very subtle. The range of differences is between -1% and 4%. The throughputs of those with JGroups’ bundler and without JGroups bundler are close to each other with every payload. The results indicate that removing the bundler does not actually help with improving Netty’s performance. Therefore, the assumption that Netty’s built-in bundler improves Netty’s performance is wrong. Thus, the useful method to improve Netty's performance with low payloads needs further study.
+
+
 [1] https://groups.google.com/forum/#!forum/jgroups-dev
