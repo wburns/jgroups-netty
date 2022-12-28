@@ -19,8 +19,8 @@ public class Netty extends TP {
     @Property(description = "Use Native packages when available")
     protected boolean use_native_transport;
 
-    @Property(description = "Use Native packages when available")
-    protected String resource_leak_detector_level;
+    @Property(description = "Leak detector level")
+    protected String resource_leak_detector_level="DISABLED";
 
     private NettyConnection server;
     private IpAddress selfAddress = null;
