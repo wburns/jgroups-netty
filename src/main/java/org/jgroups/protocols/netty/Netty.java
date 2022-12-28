@@ -32,11 +32,6 @@ public class Netty extends TP {
     }
 
     @Override
-    public void sendMulticast(byte[] data, int offset, int length) throws Exception {
-        sendToMembers(members, data, offset, length);
-    }
-
-    @Override
     public void sendUnicast(PhysicalAddress dest, byte[] data, int offset, int length) throws Exception {
         _send(dest, data, offset, length);
     }
