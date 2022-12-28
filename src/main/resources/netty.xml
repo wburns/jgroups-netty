@@ -13,8 +13,9 @@
          thread_pool.keep_alive_time="30000"/>
 
     <TCPPING async_discovery="true"
-             initial_hosts="${jgroups.tcpping.initial_hosts:10.128.0.4[7800],10.128.0.3[7800]}"
+             initial_hosts="${jgroups.tcpping.initial_hosts:127.0.0.1[7800]}"
              port_range="2"/>
+    <MPING/>
     <MERGE3  min_interval="10000"
              max_interval="30000"/>
     <FD_SOCK/>
