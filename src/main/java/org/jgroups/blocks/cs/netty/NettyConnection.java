@@ -40,13 +40,13 @@ public class NettyConnection {
     private final ServerBootstrap inboundBootstrap = new ServerBootstrap();
     private final Map<IpAddress, Channel> ipAddressChannelMap = new HashMap<>();
     private byte[] replyAdder = null;
-    private int port;
-    private InetAddress bind_addr;
-    private EventLoopGroup boss_group; // Only handles incoming connections
-    private EventLoopGroup worker_group;
-    private boolean isNativeTransport;
-    private NettyReceiverListener callback;
-    private ChannelLifecycleListener lifecycleListener;
+    private final int port;
+    private final InetAddress bind_addr;
+    private final EventLoopGroup boss_group; // Only handles incoming connections
+    private final EventLoopGroup worker_group;
+    private final boolean isNativeTransport;
+    private final NettyReceiverListener callback;
+    private final ChannelLifecycleListener lifecycleListener;
 
     public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, boolean isNativeTransport) {
         this.port = port;
@@ -128,10 +128,8 @@ public class NettyConnection {
         writeToChannel(ch, packed);
     }
 
-    private void writeToChannel(Channel ch, ByteBuf data) {
-        ch.eventLoop().execute(() -> {
-            ch.writeAndFlush(data, ch.voidPromise());
-        });
+    private static void writeToChannel(Channel ch, ByteBuf data) {
+        ch.eventLoop().execute(() -> ch.writeAndFlush(data, ch.voidPromise()));
     }
 
     private void updateMap(Channel connected, IpAddress destAddr) {
