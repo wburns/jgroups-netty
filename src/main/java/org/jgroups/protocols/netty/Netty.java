@@ -15,15 +15,19 @@ import java.net.BindException;
 /***
  * @author Baizel Mathew
  */
-public class Netty extends TP {
+public class Netty extends TP implements NettyReceiverListener {
     @Property(description = "Use Native packages when available")
-    protected boolean use_native_transport;
+    protected boolean       use_native_transport;
+
+    @Property(description="Uses the Netty incubator (https://github.com/netty/netty-incubator-transport-io_uring) to " +
+      "use IO_URING. Requires Linux with a kernel >= 5.9")
+    protected boolean       use_io_uring;
 
     @Property(description = "Leak detector level")
-    protected String resource_leak_detector_level="DISABLED";
+    protected String        resource_leak_detector_level="DISABLED";
 
     private NettyConnection server;
-    private IpAddress selfAddress = null;
+    private IpAddress       selfAddress;
 
 
     @Override
@@ -62,11 +66,20 @@ public class Netty extends TP {
         try {
             server.shutdown();
         } catch (InterruptedException e) {
-            e.printStackTrace();
-            log.error("Failed to shutdown server");
+            log.error("Failed to shutdown server", e);
         }
         super.stop();
+    }
 
+    @Override
+    public void onReceive(Address sender, byte[] msg, int offset, int length) {
+        //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive
+        receive(sender, msg, offset, length);
+    }
+
+    @Override
+    public void onError(Throwable ex) {
+        log.error("error received at Netty transport " + ex.toString());
     }
 
     @Override
@@ -87,18 +100,7 @@ public class Netty extends TP {
 
     private boolean createServer() throws InterruptedException {
         try {
-            server = new NettyConnection(bind_addr, bind_port, new NettyReceiverListener() {
-                @Override
-                public void onReceive(Address sender, byte[] msg, int offset, int length) {
-                    //This method is called from a non IO thread. it should be safe for this to block without affecting netty receive
-                    receive(sender, msg, offset, length);
-                }
-
-                @Override
-                public void onError(Throwable ex) {
-                    log.error("Error Received at Netty transport " + ex.toString());
-                }
-            }, use_native_transport);
+            server = new NettyConnection(bind_addr, bind_port, this, log, use_native_transport, use_io_uring);
             server.run();
             selfAddress = (IpAddress) server.getLocalAddress();
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {

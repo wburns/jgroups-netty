@@ -9,17 +9,25 @@ import io.netty.channel.*;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.epoll.EpollSocketChannel;
+import io.netty.channel.kqueue.KQueueEventLoopGroup;
+import io.netty.channel.kqueue.KQueueServerSocketChannel;
+import io.netty.channel.kqueue.KQueueSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.channel.unix.Errors;
+import io.netty.incubator.channel.uring.IOUringEventLoopGroup;
+import io.netty.incubator.channel.uring.IOUringServerSocketChannel;
+import io.netty.incubator.channel.uring.IOUringSocketChannel;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 import netty.listeners.ChannelLifecycleListener;
 import netty.listeners.NettyReceiverListener;
 import netty.utils.PipelineChannelInitializer;
 import org.jgroups.Address;
+import org.jgroups.logging.Log;
 import org.jgroups.stack.IpAddress;
+import org.jgroups.util.Util;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -44,17 +52,22 @@ public class NettyConnection {
     private final InetAddress bind_addr;
     private final EventLoopGroup boss_group; // Only handles incoming connections
     private final EventLoopGroup worker_group;
-    private final boolean isNativeTransport;
+    private boolean isNativeTransport;
+    private boolean useIOURing;
     private final NettyReceiverListener callback;
     private final ChannelLifecycleListener lifecycleListener;
+    private final Log log;
 
-    public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, boolean isNativeTransport) {
+    public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, Log log,
+                           boolean isNativeTransport, boolean useIOURing) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
+        this.log=log;
         this.isNativeTransport = isNativeTransport;
-        boss_group = isNativeTransport ? new EpollEventLoopGroup(1) : new NioEventLoopGroup(1);
-        worker_group = isNativeTransport ? new EpollEventLoopGroup() : new NioEventLoopGroup();
+        this.useIOURing = useIOURing;
+        boss_group = createEventLoopGroup(1);
+        worker_group = createEventLoopGroup(0);
 
         lifecycleListener = new ChannelLifecycleListener() {
             @Override
@@ -87,11 +100,10 @@ public class NettyConnection {
 
     public final void send(IpAddress destAddr, byte[] data, int offset, int length) {
         Channel opened = ipAddressChannelMap.getOrDefault(destAddr, null);
-        if (opened != null) {
+        if (opened != null)
             writeToChannel(opened, data, offset, length);
-        } else
+        else
             connectAndSend(destAddr, data, offset, length);
-
     }
 
     public final void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
@@ -147,18 +159,52 @@ public class NettyConnection {
         ipAddressChannelMap.put(destAddr, connected);
     }
 
+    protected EventLoopGroup createEventLoopGroup(int numThreads) {
+        if(useIOURing) {
+            try {
+                return numThreads > 0? new IOUringEventLoopGroup(numThreads) : new IOUringEventLoopGroup();
+            }
+            catch(Throwable t) {
+                log.warn("failed to use io_uring (disabling it): " + t.getMessage());
+                useIOURing=false;
+            }
+        }
+        if(isNativeTransport) {
+            try {
+                if(Util.checkForMac())
+                    return numThreads > 0? new KQueueEventLoopGroup(numThreads) : new KQueueEventLoopGroup();
+                return numThreads > 0? new EpollEventLoopGroup(numThreads) : new EpollEventLoopGroup(); // Linux
+            }
+            catch(Throwable t) {
+                log.warn("failed to use native transport", t);
+                isNativeTransport=false;
+            }
+        }
+        log.debug("falling back to " + NioEventLoopGroup.class.getSimpleName());
+        return numThreads > 0? new NioEventLoopGroup(numThreads) : new NioEventLoopGroup();
+    }
+
+    protected Class<? extends Channel> channelClass(boolean server) {
+        if(useIOURing)
+            return server? IOUringServerSocketChannel.class : IOUringSocketChannel.class;
+        if(isNativeTransport) {
+            if(Util.checkForMac())
+                return server? KQueueServerSocketChannel.class : KQueueSocketChannel.class;
+            return server? EpollServerSocketChannel.class : EpollSocketChannel.class;
+        }
+        return server? NioServerSocketChannel.class : NioSocketChannel.class;
+    }
+
+
+
     private void configureClient() {
         outgoingBootstrap.group(worker_group)
-                .handler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
-                .localAddress(bind_addr, 0)
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
-                .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+          .handler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
+          .localAddress(bind_addr, 0)
+          .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
+          .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .option(ChannelOption.TCP_NODELAY, true);
-        if (isNativeTransport)
-            outgoingBootstrap.channel(EpollSocketChannel.class);
-        else
-            outgoingBootstrap.channel(NioSocketChannel.class);
-
+        outgoingBootstrap.channel(channelClass(false));
     }
 
     private void configureServer() {
@@ -168,12 +214,9 @@ public class NettyConnection {
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
-                .childOption(ChannelOption.TCP_NODELAY, true);
-        if (isNativeTransport) {
-            inboundBootstrap.channel(EpollServerSocketChannel.class);
-        } else {
-            inboundBootstrap.channel(NioServerSocketChannel.class);
-        }
+          .childOption(ChannelOption.TCP_NODELAY, true);
+        Class<? extends Channel> ch=channelClass(true);
+        inboundBootstrap.channel((Class<? extends ServerChannel>)ch);
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {

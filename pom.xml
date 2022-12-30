@@ -4,7 +4,7 @@
     <artifactId>jgroups-netty</artifactId>
     <packaging>jar</packaging>
     <name>jgroups-netty</name>
-    <version>1.0.0.Beta1-SNAPSHOT</version>
+    <version>1.0.0.Beta2-SNAPSHOT</version>
     <description>A netty based transport layer for JGroups</description>
     <url>http://www.github.com/jgroups-extras/jgroups-netty</url>
 
@@ -93,6 +93,13 @@
             <groupId>io.netty</groupId>
             <artifactId>netty-all</artifactId>
             <version>${version.netty}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.netty.incubator</groupId>
+            <artifactId>netty-incubator-transport-native-io_uring</artifactId>
+            <version>0.0.16.Final</version>
+            <!--classifier>osx-x86_64</classifier-->
+            <classifier>linux-x86_64</classifier>
         </dependency>
         <dependency>
             <groupId>org.jgroups</groupId>
