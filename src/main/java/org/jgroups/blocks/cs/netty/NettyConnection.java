@@ -52,19 +52,25 @@ public class NettyConnection {
     private final InetAddress bind_addr;
     private final EventLoopGroup boss_group; // Only handles incoming connections
     private final EventLoopGroup worker_group;
-    private boolean isNativeTransport;
+    private boolean useNativeTransport;
     private boolean useIOURing;
     private final NettyReceiverListener callback;
     private final ChannelLifecycleListener lifecycleListener;
     private final Log log;
 
+
+    public boolean useNativeTransport() {return useNativeTransport;}
+    public boolean useIOURing()         {return useIOURing;}
+
+
+
     public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, Log log,
-                           boolean isNativeTransport, boolean useIOURing) {
+                           boolean useNativeTransport, boolean useIOURing) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
         this.log=log;
-        this.isNativeTransport = isNativeTransport;
+        this.useNativeTransport=useNativeTransport;
         this.useIOURing = useIOURing;
         boss_group = createEventLoopGroup(1);
         worker_group = createEventLoopGroup(0);
@@ -169,7 +175,7 @@ public class NettyConnection {
                 useIOURing=false;
             }
         }
-        if(isNativeTransport) {
+        if(useNativeTransport) {
             try {
                 if(Util.checkForMac())
                     return numThreads > 0? new KQueueEventLoopGroup(numThreads) : new KQueueEventLoopGroup();
@@ -177,7 +183,7 @@ public class NettyConnection {
             }
             catch(Throwable t) {
                 log.warn("failed to use native transport", t);
-                isNativeTransport=false;
+                useNativeTransport=false;
             }
         }
         log.debug("falling back to " + NioEventLoopGroup.class.getSimpleName());
@@ -187,7 +193,7 @@ public class NettyConnection {
     protected Class<? extends Channel> channelClass(boolean server) {
         if(useIOURing)
             return server? IOUringServerSocketChannel.class : IOUringSocketChannel.class;
-        if(isNativeTransport) {
+        if(useNativeTransport) {
             if(Util.checkForMac())
                 return server? KQueueServerSocketChannel.class : KQueueSocketChannel.class;
             return server? EpollServerSocketChannel.class : EpollSocketChannel.class;

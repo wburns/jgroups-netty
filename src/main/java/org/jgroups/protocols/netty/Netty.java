@@ -58,6 +58,8 @@ public class Netty extends TP implements NettyReceiverListener {
         }
         if (!isServerCreated)
             throw new BindException("No port found to bind within port range");
+        use_native_transport=server.useNativeTransport();
+        use_io_uring=server.useIOURing();
         super.start();
     }
 
