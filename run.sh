@@ -1,2 +1,2 @@
 #!/bin/bash
-java -classpath ./target/*:target/dependency/* "$@";
+java -classpath ./target/classes:target/dependency/* "$@";
