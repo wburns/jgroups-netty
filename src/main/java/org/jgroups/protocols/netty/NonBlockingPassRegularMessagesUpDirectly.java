@@ -15,6 +15,7 @@ import org.jgroups.annotations.Property;
 import org.jgroups.conf.ClassConfigurator;
 import org.jgroups.protocols.TP;
 import org.jgroups.protocols.pbcast.GMS;
+import org.jgroups.protocols.pbcast.NAKACK2;
 import org.jgroups.util.MaxOneThreadPerSender;
 import org.jgroups.util.MessageBatch;
 import org.jgroups.util.SubmitToThreadPool;
@@ -133,6 +134,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
    private static final AtomicLongFieldUpdater<Entry> QUEUED_MSGS_UPDATER = AtomicLongFieldUpdater.newUpdater(Entry.class, "queued_msgs");
 
    private static final short GMS_ID = ClassConfigurator.getProtocolId(GMS.class);
+   private static final short NAKACK_ID = ClassConfigurator.getProtocolId(NAKACK2.class);
 
    protected class Entry implements Runnable {
       volatile boolean running = false;
@@ -188,7 +190,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
          running = true;
          smh.run();
          running = false;
-         if (msg.getHeader(GMS_ID) != null) {
+         if (msg.getHeader(GMS_ID) != null || msg.getType() == Message.EMPTY_MSG || msg.getHeader(NAKACK_ID) != null) {
             // Assume GMS processed synchronously
             messageBeingProcessed = null;
          }

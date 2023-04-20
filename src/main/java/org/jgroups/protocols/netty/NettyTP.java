@@ -9,7 +9,9 @@ import org.jgroups.Message;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.annotations.Property;
 import org.jgroups.blocks.cs.netty.NettyConnection;
+import org.jgroups.conf.ClassConfigurator;
 import org.jgroups.protocols.TP;
+import org.jgroups.protocols.pbcast.NAKACK2;
 import org.jgroups.stack.IpAddress;
 
 import io.netty.channel.Channel;
@@ -40,6 +42,8 @@ public class NettyTP extends TP implements NettyReceiverListener {
     public NettyTP() {
         msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
     }
+
+    private static final short NAKACK_ID = ClassConfigurator.getProtocolId(NAKACK2.class);
 
     @Override
     public void init() throws Exception {
@@ -148,7 +152,9 @@ public class NettyTP extends TP implements NettyReceiverListener {
     @Override
     public Object down(Message msg) {
         // Don't need reliability with netty
-        msg.setFlag(Message.Flag.NO_RELIABILITY);
+        if (msg.getType() != Message.EMPTY_MSG && msg.getHeader(NAKACK_ID) == null) {
+            msg.setFlag(Message.Flag.NO_RELIABILITY);
+        }
         return super.down(msg);
     }
 
