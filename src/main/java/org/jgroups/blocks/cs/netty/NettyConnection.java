@@ -1,11 +1,30 @@
 package org.jgroups.blocks.cs.netty;
 
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+import org.jgroups.Address;
+import org.jgroups.logging.Log;
+import org.jgroups.stack.IpAddress;
+import org.jgroups.util.Util;
+
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.PooledByteBufAllocator;
-import io.netty.channel.*;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ServerChannel;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.epoll.EpollSocketChannel;
@@ -19,34 +38,21 @@ import io.netty.channel.unix.Errors;
 import io.netty.incubator.channel.uring.IOUringEventLoopGroup;
 import io.netty.incubator.channel.uring.IOUringServerSocketChannel;
 import io.netty.incubator.channel.uring.IOUringSocketChannel;
+import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
 import io.netty.util.concurrent.EventExecutorGroup;
 import netty.listeners.ChannelLifecycleListener;
 import netty.listeners.NettyReceiverListener;
 import netty.utils.PipelineChannelInitializer;
-import org.jgroups.Address;
-import org.jgroups.logging.Log;
-import org.jgroups.stack.IpAddress;
-import org.jgroups.util.Util;
-
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
-import java.io.IOException;
-import java.net.BindException;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.util.HashMap;
-import java.util.Map;
 
 /***
  * @author Baizel Mathew
  */
 public class NettyConnection {
-
-    private final EventExecutorGroup separateWorkerGroup = new DefaultEventExecutorGroup(4);
-    private final Bootstrap outgoingBootstrap = new Bootstrap();
-    private final ServerBootstrap inboundBootstrap = new ServerBootstrap();
-    private final Map<IpAddress, Channel> ipAddressChannelMap = new HashMap<>();
+    private final Bootstrap clientBootstrap = new Bootstrap();
+    private final ServerBootstrap serverBootstrap = new ServerBootstrap();
+    private final Map<Address, Channel> clientChannelMap = new ConcurrentHashMap<>();
+    private final Map<Address, Channel> serverChannelMap = new ConcurrentHashMap<>();
     private byte[] replyAdder = null;
     private final int port;
     private final InetAddress bind_addr;
@@ -55,43 +61,60 @@ public class NettyConnection {
     private boolean useNativeTransport;
     private boolean useIOURing;
     private final NettyReceiverListener callback;
-    private final ChannelLifecycleListener lifecycleListener;
+    private final ChannelLifecycleListener clientLifecycleListener;
+    private final ChannelLifecycleListener serverLifecycleListener;
     private final Log log;
 
 
-    public boolean useNativeTransport() {return useNativeTransport;}
-    public boolean useIOURing()         {return useIOURing;}
-
-
-
     public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, Log log,
-                           boolean useNativeTransport, boolean useIOURing) {
+                           EventLoopGroup bossGroup,
+                           EventLoopGroup workerGroup) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
         this.log=log;
-        this.useNativeTransport=useNativeTransport;
-        this.useIOURing = useIOURing;
-        boss_group = createEventLoopGroup(1);
-        worker_group = createEventLoopGroup(0);
+        boss_group = bossGroup;
+        worker_group = workerGroup;
 
-        lifecycleListener = new ChannelLifecycleListener() {
+        clientLifecycleListener = new ChannelLifecycleListener() {
             @Override
             public void channelInactive(Channel channel) {
-                ipAddressChannelMap.values().remove(channel);
+                IpAddress ipAddress = channel.attr(ADDRESS_ATTRIBUTE).get();
+                if (ipAddress != null) {
+                    clientChannelMap.remove(ipAddress);
+                } else {
+                    clientChannelMap.values().remove(channel);
+                }
             }
 
             @Override
             public void channelRead(Channel channel, IpAddress sender) {
-                updateMap(channel, sender);
+                updateMap(channel, sender, false);
             }
         };
-        configureClient();
+
+        serverLifecycleListener = new ChannelLifecycleListener() {
+            @Override
+            public void channelInactive(Channel channel) {
+                IpAddress ipAddress = channel.attr(ADDRESS_ATTRIBUTE).get();
+                if (ipAddress != null) {
+                    serverChannelMap.remove(ipAddress);
+                } else {
+                    serverChannelMap.values().remove(channel);
+                }
+            }
+
+            @Override
+            public void channelRead(Channel channel, IpAddress sender) {
+                updateMap(channel, sender, true);
+            }
+        };
         configureServer();
+        configureClient();
     }
 
     public void run() throws InterruptedException, BindException, Errors.NativeIoException {
-        inboundBootstrap.bind().sync();
+        serverBootstrap.bind().sync();
 
         try {
             ByteArrayOutputStream replyAddByteStream = new ByteArrayOutputStream();
@@ -105,30 +128,30 @@ public class NettyConnection {
     }
 
     public final void send(IpAddress destAddr, byte[] data, int offset, int length) {
-        Channel opened = ipAddressChannelMap.getOrDefault(destAddr, null);
+        Channel opened = clientChannelMap.getOrDefault(destAddr, null);
         if (opened != null)
             writeToChannel(opened, data, offset, length);
         else
             connectAndSend(destAddr, data, offset, length);
     }
 
+    public static AttributeKey<IpAddress> ADDRESS_ATTRIBUTE = AttributeKey.newInstance("jgroups-ipaddress");
+
     public final void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
-        ChannelFuture cf = outgoingBootstrap.connect(new InetSocketAddress(addr.getIpAddress(), addr.getPort()));
+        ChannelFuture cf = clientBootstrap.connect(new InetSocketAddress(addr.getIpAddress(), addr.getPort()));
         // Putting pack(...) inside the lambda causes unexpected behaviour.
         // Both send and receive works fine but it does not get passed up properly, might be something to do with the buffer
         ByteBuf packed = pack(cf.channel().alloc(), data, offset, length, replyAdder);
         cf.addListener((ChannelFutureListener) channelFuture -> {
             if (channelFuture.isSuccess()) {
                 Channel ch = channelFuture.channel();
+                ch.attr(ADDRESS_ATTRIBUTE).set(addr);
                 writeToChannel(ch, packed);
-                updateMap(ch, addr);
+                updateMap(ch, addr, false);
+            } else {
+                log.warn("Unable to connect to " + addr, channelFuture.cause());
             }
         });
-    }
-
-    public final void connectAndSend(IpAddress addr) {
-        //Send an empty message so receiver knows reply addr. otherwise Receiver will make another connection
-        connectAndSend(addr, null, 0, 0);
     }
 
     public Address getLocalAddress() {
@@ -138,7 +161,10 @@ public class NettyConnection {
     public void shutdown() throws InterruptedException {
         boss_group.shutdownGracefully();
         worker_group.shutdownGracefully();
-        separateWorkerGroup.shutdownGracefully();
+    }
+
+    public Channel getServerChannelForAddress(Address address, boolean server) {
+        return (server ? serverChannelMap : clientChannelMap).get(address);
     }
 
     private void writeToChannel(Channel ch, byte[] data, int offset, int length) {
@@ -150,44 +176,12 @@ public class NettyConnection {
         ch.eventLoop().execute(() -> ch.writeAndFlush(data, ch.voidPromise()));
     }
 
-    private void updateMap(Channel connected, IpAddress destAddr) {
-        Channel channel = ipAddressChannelMap.get(destAddr);
+    private void updateMap(Channel connected, IpAddress destAddr, boolean server) {
+        Map<Address, Channel> map = server ? serverChannelMap : clientChannelMap;
+        Channel channel = map.get(destAddr);
         if (channel != null && channel.id() == connected.id())
             return;
-
-        if (channel != null) {
-            //if we already have a connection and then this will only be true in one of the nodes thus only closing one connection instead of two
-            if (connected.remoteAddress().equals(new InetSocketAddress(destAddr.getIpAddress(), destAddr.getPort()))) {
-                connected.close();
-            }
-            return;
-        }
-        ipAddressChannelMap.put(destAddr, connected);
-    }
-
-    protected EventLoopGroup createEventLoopGroup(int numThreads) {
-        if(useIOURing) {
-            try {
-                return numThreads > 0? new IOUringEventLoopGroup(numThreads) : new IOUringEventLoopGroup();
-            }
-            catch(Throwable t) {
-                log.warn("failed to use io_uring (disabling it): " + t.getMessage());
-                useIOURing=false;
-            }
-        }
-        if(useNativeTransport) {
-            try {
-                if(Util.checkForMac())
-                    return numThreads > 0? new KQueueEventLoopGroup(numThreads) : new KQueueEventLoopGroup();
-                return numThreads > 0? new EpollEventLoopGroup(numThreads) : new EpollEventLoopGroup(); // Linux
-            }
-            catch(Throwable t) {
-                log.warn("failed to use native transport", t);
-                useNativeTransport=false;
-            }
-        }
-        log.debug("falling back to " + NioEventLoopGroup.class.getSimpleName());
-        return numThreads > 0? new NioEventLoopGroup(numThreads) : new NioEventLoopGroup();
+        map.put(destAddr, connected);
     }
 
     protected Class<? extends Channel> channelClass(boolean server) {
@@ -204,25 +198,25 @@ public class NettyConnection {
 
 
     private void configureClient() {
-        outgoingBootstrap.group(worker_group)
-          .handler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
+        clientBootstrap.group(worker_group)
+          .handler(new PipelineChannelInitializer(this.callback, clientLifecycleListener))
           .localAddress(bind_addr, 0)
           .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
           .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .option(ChannelOption.TCP_NODELAY, true);
-        outgoingBootstrap.channel(channelClass(false));
+        clientBootstrap.channel(channelClass(false));
     }
 
     private void configureServer() {
-        inboundBootstrap.group(boss_group, worker_group)
+        serverBootstrap.group(boss_group, worker_group)
                 .localAddress(bind_addr, port)
-                .childHandler(new PipelineChannelInitializer(this.callback, lifecycleListener, separateWorkerGroup))
+                .childHandler(new PipelineChannelInitializer(this.callback, serverLifecycleListener))
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
           .childOption(ChannelOption.TCP_NODELAY, true);
         Class<? extends Channel> ch=channelClass(true);
-        inboundBootstrap.channel((Class<? extends ServerChannel>)ch);
+        serverBootstrap.channel((Class<? extends ServerChannel>)ch);
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {
