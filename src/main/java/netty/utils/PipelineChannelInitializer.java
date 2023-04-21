@@ -2,10 +2,7 @@ package netty.utils;
 
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelInitializer;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
 import io.netty.handler.flush.FlushConsolidationHandler;
-import io.netty.util.concurrent.EventExecutorGroup;
 import netty.listeners.ChannelLifecycleListener;
 import netty.listeners.NettyReceiverListener;
 

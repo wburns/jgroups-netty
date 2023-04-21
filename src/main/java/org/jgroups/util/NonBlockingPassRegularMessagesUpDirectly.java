@@ -1,4 +1,4 @@
-package org.jgroups.protocols.netty;
+package org.jgroups.util;
 
 import java.util.ArrayDeque;
 import java.util.Iterator;
@@ -12,13 +12,10 @@ import org.jgroups.Address;
 import org.jgroups.Message;
 import org.jgroups.annotations.ManagedOperation;
 import org.jgroups.annotations.Property;
-import org.jgroups.conf.ClassConfigurator;
+import org.jgroups.protocols.MsgStats;
 import org.jgroups.protocols.TP;
-import org.jgroups.protocols.pbcast.GMS;
-import org.jgroups.protocols.pbcast.NAKACK2;
-import org.jgroups.util.MaxOneThreadPerSender;
-import org.jgroups.util.MessageBatch;
-import org.jgroups.util.SubmitToThreadPool;
+import org.jgroups.protocols.TpHeader;
+import org.jgroups.protocols.netty.NettyTP;
 
 import io.netty.channel.EventLoop;
 
@@ -29,23 +26,19 @@ import io.netty.channel.EventLoop;
  * to tell us that the message was completed via
  */
 public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool {
-   protected final ConcurrentMap<Address, Entry> mcasts = new ConcurrentHashMap<>();
-   protected final ConcurrentMap<Address, Entry> ucasts = new ConcurrentHashMap<>();
+   protected final ConcurrentMap<Address, Entry> senderTable = new ConcurrentHashMap<>();
 
    public void viewChange(List<Address> members) {
-      mcasts.keySet().retainAll(members);
-      ucasts.keySet().retainAll(members);
+      senderTable.keySet().retainAll(members);
    }
 
    public void destroy() {
-      mcasts.clear();
-      ucasts.clear();
+      senderTable.clear();
    }
 
    @Override
    public void reset() {
-      mcasts.values().forEach(Entry::reset);
-      ucasts.values().forEach(Entry::reset);
+      senderTable.values().forEach(Entry::reset);
    }
 
    protected NettyTP transport;
@@ -83,7 +76,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
 
    @ManagedOperation(description="Dumps unicast and multicast tables")
    public String dump() {
-      return String.format("\nmcasts:\n%s\nucasts:\n%s", mapToString(mcasts), mapToString(ucasts));
+      return String.format("\nsenderTable:\n%s", mapToString(senderTable));
    }
 
    static String mapToString(ConcurrentMap<Address, Entry> map) {
@@ -93,13 +86,12 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
    }
 
    public void completedMessage(Message msg, EventLoop loop) {
-      ConcurrentMap<Address, Entry> map = msg.getDest() == null ? mcasts : ucasts;
-      Entry entry = map.get(msg.getSrc());
+      Entry entry = senderTable.get(msg.getSrc());
       if (entry != null) {
-         log.trace("Marking %s as completed", msg);
+         log.trace("%s Marking %s as completed", tp.addr(), msg);
          entry.messageCompleted(msg, loop);
       } else {
-         log.debug("Message %s was marked as completed, but was not present in MessageTable, most likely concurrent stop", msg);
+         log.debug("%s Message %s was marked as completed, but was not present in MessageTable, most likely concurrent stop", tp.addr(), msg);
       }
    }
 
@@ -113,9 +105,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       if (oob) {
          return super.process(batch, true);
       }
-      boolean multicast = batch.getDest() == null;
-      ConcurrentMap<Address, Entry> map = multicast ? mcasts : ucasts;
-      Entry entry = map.computeIfAbsent(batch.sender(), Entry::new);
+      Entry entry = senderTable.computeIfAbsent(batch.sender(), Entry::new);
       return entry.process(batch);
    }
 
@@ -124,22 +114,18 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       if (oob) {
          return super.process(msg, true);
       }
-      boolean multicast = msg.getDest() == null;
-      ConcurrentMap<Address, Entry> map = multicast ? mcasts : ucasts;
-      Entry entry = map.computeIfAbsent(msg.getSrc(), Entry::new);
+      Entry entry = senderTable.computeIfAbsent(msg.getSrc(), Entry::new);
       return entry.process(msg);
    }
 
    private static final AtomicLongFieldUpdater<Entry> SUBMITTED_MSGS_UPDATER = AtomicLongFieldUpdater.newUpdater(Entry.class, "submitted_msgs");
    private static final AtomicLongFieldUpdater<Entry> QUEUED_MSGS_UPDATER = AtomicLongFieldUpdater.newUpdater(Entry.class, "queued_msgs");
 
-   private static final short GMS_ID = ClassConfigurator.getProtocolId(GMS.class);
-   private static final short NAKACK_ID = ClassConfigurator.getProtocolId(NAKACK2.class);
-
    protected class Entry implements Runnable {
       volatile boolean running = false;
       // This variable is only accessed from the event loop tied with the sender
       protected final ArrayDeque<Message> batch;    // used to queue messages
+      protected final Thread eventLoopThread;
       protected final Address      sender;
 
       protected volatile long               submitted_msgs;
@@ -154,6 +140,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       protected Entry(Address sender) {
          this.sender=sender;
          batch=new ArrayDeque<>();
+         eventLoopThread=Thread.currentThread();
       }
 
 
@@ -164,19 +151,24 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
 
       protected void messageCompleted(Message msg, EventLoop loop) {
          if (msg != messageBeingProcessed) {
-            log.error("Inconsistent message completed %s versus processing %s, this is most likely a bug!", msg, messageBeingProcessed);
-         } else {
-            log.trace("Message %s completed, dispatching next message if applicable", msg);
+            log.error("%s Inconsistent message completed %s versus processing %s, this is most likely a bug!", tp.addr(), msg, messageBeingProcessed);
          }
-         messageBeingProcessed = null;
-         // If we aren't running that means we were an asynchronously processed message and we need to make sure
-         // to continue any additional tasks on the netty event loop
-         if (!running) {
-            if (loop.inEventLoop()) {
-               run();
-            } else {
-               loop.execute(this);
+         if (loop.inEventLoop()) {
+            if (running) {
+               log.trace("%s Message %s completed synchronously ", tp.addr(), msg);
+               messageBeingProcessed = null;
+               return;
             }
+         }
+         log.trace("%s Message %s completed async, dispatching next message if applicable", tp.addr(), msg);
+
+         // NOTE: we cannot set messageBeingProcessed to null as it was completed asynchronously, because if there is a
+         // pending read between our submission below that it enqueues the message
+
+         if (loop.inEventLoop()) {
+            run();
+         } else {
+            loop.execute(this);
          }
       }
 
@@ -186,22 +178,43 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
        * @return whether the message completed synchronously
        */
       protected boolean submitMessage(Message msg) {
-         SingleMessageHandler smh=new SingleMessageHandler(msg);
          running = true;
-         smh.run();
-         running = false;
-         if (msg.getHeader(GMS_ID) != null || msg.getType() == Message.EMPTY_MSG || msg.getHeader(NAKACK_ID) != null) {
-            // Assume GMS processed synchronously
-            messageBeingProcessed = null;
+         // Following block is just copied from SubmitToThreadPool#SingleMessageHandler instead of allocating a new
+         // object and also because the constructor is protected
+         {
+            Address dest=msg.getDest();
+            boolean multicast=dest == null;
+            try {
+               if(tp.statsEnabled()) {
+                  MsgStats msg_stats=tp.getMessageStats();
+                  boolean oob=msg.isFlagSet(Message.Flag.OOB);
+                  if(oob)
+                     msg_stats.incrNumOOBMsgsReceived(1);
+                  else
+                     msg_stats.incrNumMsgsReceived(1);
+                  msg_stats.incrNumBytesReceived(msg.getLength());
+               }
+               TpHeader hdr=msg.getHeader(tp_id);
+               byte[] cname = hdr.getClusterName();
+               tp.passMessageUp(msg, cname, true, multicast, true);
+            }
+            catch(Throwable t) {
+               log.error(Util.getMessage("PassUpFailure"), t);
+            }
+
          }
-         if (messageBeingProcessed != null) {
-            log.trace("Message %s not completed synchronously, must wait until it is complete later", msg);
+         running = false;
+         // Check for the presence of the async header to tell if message may be delayed
+         if (!(msg.getHeader(tp.getId()) instanceof NettyAsyncHeader)) {
+            messageBeingProcessed = null;
+         } else if (messageBeingProcessed != null) {
+            log.trace("%s Message %s not completed synchronously, must wait until it is complete later", tp.addr(), msg);
             return false;
          }
          return true;
       }
 
-      protected boolean process(Message msg) {
+      public boolean process(Message msg) {
          if (messageBeingProcessed != null) {
             QUEUED_MSGS_UPDATER.incrementAndGet(this);
             batch.add(msg);
@@ -213,7 +226,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
          return submitMessage(msg);
       }
 
-      protected boolean process(MessageBatch batch) {
+      public boolean process(MessageBatch batch) {
          if (messageBeingProcessed != null) {
             QUEUED_MSGS_UPDATER.addAndGet(this, batch.size());
             batch.transferFrom(batch, false);
@@ -243,12 +256,14 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
          return false;
       }
 
-      private void notifyOnWatermarkOverflow(Address addr) {
+      private void notifyOnWatermarkOverflow(Address sender) {
          if (batchLength < high_watermark) {
-            batchLength = batchLength();
+            long newBatchLength = batchLength();
+            log.trace("%s Batch size has increased from %s to %s for sender %s", tp.addr(), batchLength, newBatchLength, sender);
+            batchLength = newBatchLength;
             if (batchLength > high_watermark) {
-               log.trace("High watermark met for %s, pausing reads", addr);
-               tp.down(new WatermarkOverflowEvent(addr, true));
+               log.trace("%s High watermark met for sender %s, pausing reads", tp.addr(), sender);
+               tp.down(new WatermarkOverflowEvent(sender, true));
             }
          }
       }
@@ -267,14 +282,16 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
          return size;
       }
 
+      // This code can only be invoked in the event loop for this sender
       @Override
       public void run() {
          long startingLength = batchLength;
          boolean canSendLowWaterMark = high_watermark < startingLength;
 
-         assert messageBeingProcessed == null;
+         assert messageBeingProcessed != null;
+         messageBeingProcessed = null;
 
-         log.trace("Batch has %d messages renaming", batch.size());
+         log.trace("%s Batch has %d messages renaming", tp.addr(), batch.size());
 
          Message msg;
          while ((msg = batch.pollFirst()) != null) {
@@ -287,7 +304,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
             long endingLength = batchLength();
             batchLength = endingLength;
             if (canSendLowWaterMark && endingLength < low_watermark) {
-               log.trace("Low watermark met for %s, resuming reads", msg.src());
+               log.trace("%s Low watermark met for %s, resuming reads", tp.addr(), msg.src());
                tp.down(new WatermarkOverflowEvent(msg.src(), false));
             }
          } else {

@@ -2,6 +2,7 @@ package org.jgroups.protocols.netty;
 
 import java.io.DataInput;
 import java.net.BindException;
+import java.util.concurrent.TimeUnit;
 
 import org.jgroups.Address;
 import org.jgroups.Event;
@@ -11,15 +12,29 @@ import org.jgroups.annotations.Property;
 import org.jgroups.blocks.cs.netty.NettyConnection;
 import org.jgroups.conf.ClassConfigurator;
 import org.jgroups.protocols.TP;
-import org.jgroups.protocols.pbcast.NAKACK2;
 import org.jgroups.stack.IpAddress;
+import org.jgroups.util.MessageCompleteEvent;
+import org.jgroups.util.NettyAsyncHeader;
+import org.jgroups.util.NonBlockingPassRegularMessagesUpDirectly;
+import org.jgroups.util.Util;
+import org.jgroups.util.WatermarkOverflowEvent;
 
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
+import io.netty.channel.ServerChannel;
 import io.netty.channel.epoll.EpollEventLoopGroup;
+import io.netty.channel.epoll.EpollServerSocketChannel;
+import io.netty.channel.epoll.EpollSocketChannel;
+import io.netty.channel.kqueue.KQueueServerSocketChannel;
+import io.netty.channel.kqueue.KQueueSocketChannel;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.SocketChannel;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.channel.unix.Errors;
 import io.netty.incubator.channel.uring.IOUringEventLoopGroup;
+import io.netty.incubator.channel.uring.IOUringServerSocketChannel;
+import io.netty.incubator.channel.uring.IOUringSocketChannel;
 import netty.listeners.NettyReceiverListener;
 
 /***
@@ -39,24 +54,35 @@ public class NettyTP extends TP implements NettyReceiverListener {
     private EventLoopGroup bossGroup;
     private EventLoopGroup workerGroup;
 
+    private Class<? extends ServerChannel> serverChannel;
+    private Class<? extends SocketChannel> clientChannel;
+
     public NettyTP() {
         msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
     }
 
-    private static final short NAKACK_ID = ClassConfigurator.getProtocolId(NAKACK2.class);
-
     @Override
     public void init() throws Exception {
+        ClassConfigurator.add(NettyAsyncHeader.MAGIC_ID, NettyAsyncHeader.class);
+
         super.init();
+        if (serverChannel == null) {
+            serverChannel = serverChannel();
+        }
+        if (clientChannel == null) {
+            clientChannel = clientChannel();
+        }
         if (!(msg_processing_policy instanceof NonBlockingPassRegularMessagesUpDirectly)) {
             log.debug("msg_processing_policy was set, ignoring as NettyTP requires it specific policy");
             msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
             msg_processing_policy.init(this);
         }
-        initializeNettyGroupsIfNecessary();
     }
 
     public void replaceBossEventLoop(EventLoopGroup bossGroup) {
+        if (server != null) {
+            throw new IllegalStateException("Boss event loop group cannot be set after server has been started!");
+        }
         if (this.bossGroup != null) {
             this.bossGroup.shutdownGracefully();
         }
@@ -64,10 +90,27 @@ public class NettyTP extends TP implements NettyReceiverListener {
     }
 
     public void replaceWorkerEventLoop(EventLoopGroup workerGroup) {
+        if (server != null) {
+            throw new IllegalStateException("Worker event loop group cannot be set after server has been started!");
+        }
         if (this.workerGroup != null) {
             this.workerGroup.shutdownGracefully();
         }
         this.workerGroup = workerGroup;
+    }
+
+    public void setServerChannel(Class<? extends ServerChannel> serverChannel) {
+        if (server != null) {
+            throw new IllegalStateException("Server channel cannot be set after server has been started!");
+        }
+        this.serverChannel = serverChannel;
+    }
+
+    public void setSocketChannel(Class<? extends SocketChannel> clientChannel) {
+        if (server != null) {
+            throw new IllegalStateException("Client channel cannot be set after server has been started!");
+        }
+        this.clientChannel = clientChannel;
     }
 
     @Override
@@ -87,6 +130,7 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     @Override
     public void start() throws Exception {
+        initializeNettyGroupsIfNecessary();
         boolean isServerCreated = createServer();
         while (!isServerCreated && bind_port < bind_port + port_range) {
             //Keep trying to create server until
@@ -135,11 +179,9 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     @Override
     public void stop() {
-        try {
-            server.shutdown();
-        } catch (InterruptedException e) {
-            log.error("Failed to shutdown server", e);
-        }
+        // Shut down without a quiet period
+        bossGroup.shutdownGracefully(0, 10, TimeUnit.SECONDS);
+        workerGroup.shutdownGracefully(0, 10, TimeUnit.SECONDS);
         super.stop();
     }
 
@@ -147,15 +189,6 @@ public class NettyTP extends TP implements NettyReceiverListener {
     @Override
     public void onReceive(Address sender, DataInput in) throws Exception {
         receive(sender, in);
-    }
-
-    @Override
-    public Object down(Message msg) {
-        // Don't need reliability with netty
-        if (msg.getType() != Message.EMPTY_MSG && msg.getHeader(NAKACK_ID) == null) {
-            msg.setFlag(Message.Flag.NO_RELIABILITY);
-        }
-        return super.down(msg);
     }
 
     PhysicalAddress toPhysicalAddress(Address address) {
@@ -212,12 +245,34 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     private boolean createServer() throws InterruptedException {
         try {
-            server = new NettyConnection(bind_addr, bind_port, this, log, bossGroup, workerGroup);
+            server = new NettyConnection(bind_addr, bind_port, this, log, bossGroup, workerGroup,
+                  serverChannel, clientChannel);
             server.run();
             selfAddress = (IpAddress) server.getLocalAddress();
         } catch (BindException | Errors.NativeIoException | InterruptedException exception) {
             return false;
         }
         return true;
+    }
+    protected Class<? extends ServerChannel> serverChannel() {
+        if(use_io_uring)
+            return IOUringServerSocketChannel.class;
+        if(use_native_transport) {
+            if(Util.checkForMac())
+                return KQueueServerSocketChannel.class;
+            return EpollServerSocketChannel.class;
+        }
+        return NioServerSocketChannel.class;
+    }
+
+    protected Class<? extends SocketChannel> clientChannel() {
+        if(use_io_uring)
+            return IOUringSocketChannel.class;
+        if(use_native_transport) {
+            if(Util.checkForMac())
+                return KQueueSocketChannel.class;
+            return EpollSocketChannel.class;
+        }
+        return NioSocketChannel.class;
     }
 }

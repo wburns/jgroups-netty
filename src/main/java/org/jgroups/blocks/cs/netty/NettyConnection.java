@@ -7,12 +7,12 @@ import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.jgroups.Address;
 import org.jgroups.logging.Log;
 import org.jgroups.stack.IpAddress;
-import org.jgroups.util.Util;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
@@ -25,22 +25,9 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
-import io.netty.channel.epoll.EpollEventLoopGroup;
-import io.netty.channel.epoll.EpollServerSocketChannel;
-import io.netty.channel.epoll.EpollSocketChannel;
-import io.netty.channel.kqueue.KQueueEventLoopGroup;
-import io.netty.channel.kqueue.KQueueServerSocketChannel;
-import io.netty.channel.kqueue.KQueueSocketChannel;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.unix.Errors;
-import io.netty.incubator.channel.uring.IOUringEventLoopGroup;
-import io.netty.incubator.channel.uring.IOUringServerSocketChannel;
-import io.netty.incubator.channel.uring.IOUringSocketChannel;
 import io.netty.util.AttributeKey;
-import io.netty.util.concurrent.DefaultEventExecutorGroup;
-import io.netty.util.concurrent.EventExecutorGroup;
 import netty.listeners.ChannelLifecycleListener;
 import netty.listeners.NettyReceiverListener;
 import netty.utils.PipelineChannelInitializer;
@@ -58,23 +45,25 @@ public class NettyConnection {
     private final InetAddress bind_addr;
     private final EventLoopGroup boss_group; // Only handles incoming connections
     private final EventLoopGroup worker_group;
-    private boolean useNativeTransport;
-    private boolean useIOURing;
     private final NettyReceiverListener callback;
     private final ChannelLifecycleListener clientLifecycleListener;
     private final ChannelLifecycleListener serverLifecycleListener;
+    private final Class<? extends ServerChannel> serverChannel;
+    private final Class<? extends SocketChannel> clientChannel;
     private final Log log;
 
 
     public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, Log log,
-                           EventLoopGroup bossGroup,
-                           EventLoopGroup workerGroup) {
+                           EventLoopGroup bossGroup, EventLoopGroup workerGroup, Class<? extends ServerChannel> serverChannel,
+                           Class<? extends SocketChannel> clientChannel) {
         this.port = port;
         this.bind_addr = bind_addr;
         this.callback = callback;
         this.log=log;
-        boss_group = bossGroup;
-        worker_group = workerGroup;
+        this.boss_group = bossGroup;
+        this.worker_group = workerGroup;
+        this.serverChannel = Objects.requireNonNull(serverChannel);
+        this.clientChannel = Objects.requireNonNull(clientChannel);
 
         clientLifecycleListener = new ChannelLifecycleListener() {
             @Override
@@ -158,11 +147,6 @@ public class NettyConnection {
         return new IpAddress(bind_addr, port);
     }
 
-    public void shutdown() throws InterruptedException {
-        boss_group.shutdownGracefully();
-        worker_group.shutdownGracefully();
-    }
-
     public Channel getServerChannelForAddress(Address address, boolean server) {
         return (server ? serverChannelMap : clientChannelMap).get(address);
     }
@@ -173,7 +157,7 @@ public class NettyConnection {
     }
 
     private static void writeToChannel(Channel ch, ByteBuf data) {
-        ch.eventLoop().execute(() -> ch.writeAndFlush(data, ch.voidPromise()));
+        ch.writeAndFlush(data, ch.voidPromise());
     }
 
     private void updateMap(Channel connected, IpAddress destAddr, boolean server) {
@@ -181,42 +165,29 @@ public class NettyConnection {
         Channel channel = map.get(destAddr);
         if (channel != null && channel.id() == connected.id())
             return;
+        log.trace("%s:%s Destination is server: %s with address %s bound to %s", bind_addr, port, server, destAddr, Thread.currentThread());
         map.put(destAddr, connected);
     }
-
-    protected Class<? extends Channel> channelClass(boolean server) {
-        if(useIOURing)
-            return server? IOUringServerSocketChannel.class : IOUringSocketChannel.class;
-        if(useNativeTransport) {
-            if(Util.checkForMac())
-                return server? KQueueServerSocketChannel.class : KQueueSocketChannel.class;
-            return server? EpollServerSocketChannel.class : EpollSocketChannel.class;
-        }
-        return server? NioServerSocketChannel.class : NioSocketChannel.class;
-    }
-
-
 
     private void configureClient() {
         clientBootstrap.group(worker_group)
           .handler(new PipelineChannelInitializer(this.callback, clientLifecycleListener))
+          .channel(clientChannel)
           .localAddress(bind_addr, 0)
           .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 1000)
           .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
                 .option(ChannelOption.TCP_NODELAY, true);
-        clientBootstrap.channel(channelClass(false));
     }
 
     private void configureServer() {
         serverBootstrap.group(boss_group, worker_group)
                 .localAddress(bind_addr, port)
+                .channel(serverChannel)
                 .childHandler(new PipelineChannelInitializer(this.callback, serverLifecycleListener))
                 .option(ChannelOption.SO_REUSEADDR, true)
                 .option(ChannelOption.SO_BACKLOG, 128)
                 .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
           .childOption(ChannelOption.TCP_NODELAY, true);
-        Class<? extends Channel> ch=channelClass(true);
-        serverBootstrap.channel((Class<? extends ServerChannel>)ch);
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {

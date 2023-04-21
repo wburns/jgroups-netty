@@ -1,4 +1,4 @@
-package org.jgroups.protocols.netty;
+package org.jgroups.util;
 
 import org.jgroups.Event;
 import org.jgroups.Message;
