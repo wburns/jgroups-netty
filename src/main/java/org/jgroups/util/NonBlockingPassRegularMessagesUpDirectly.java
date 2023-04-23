@@ -1,10 +1,11 @@
 package org.jgroups.util;
 
+import java.util.ArrayDeque;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Function;
+import java.util.concurrent.atomic.AtomicLongFieldUpdater;
 import java.util.stream.Collectors;
 
 import org.jgroups.Address;
@@ -78,9 +79,6 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       return String.format("\nsenderTable:\n%s", mapToString(senderTable));
    }
 
-   // Prevent allocating lambda per OOB message
-   protected final Function<Address, Entry> NEW_ENTRY_FUNCTION = s -> new Entry(s, tp.getClusterNameAscii());
-
    static String mapToString(ConcurrentMap<Address, Entry> map) {
       return map.values().stream()
             .map(Object::toString)
@@ -107,7 +105,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       if (oob) {
          return super.process(batch, true);
       }
-      Entry entry = senderTable.computeIfAbsent(batch.sender(), NEW_ENTRY_FUNCTION);
+      Entry entry = senderTable.computeIfAbsent(batch.sender(), Entry::new);
       return entry.process(batch);
    }
 
@@ -116,51 +114,61 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       if (oob) {
          return super.process(msg, true);
       }
-      Entry entry = senderTable.computeIfAbsent(msg.getSrc(), NEW_ENTRY_FUNCTION);
+      Entry entry = senderTable.computeIfAbsent(msg.getSrc(), Entry::new);
       return entry.process(msg);
    }
 
+   private static final AtomicLongFieldUpdater<Entry> SUBMITTED_MSGS_UPDATER = AtomicLongFieldUpdater.newUpdater(Entry.class, "submitted_msgs");
+   private static final AtomicLongFieldUpdater<Entry> QUEUED_MSGS_UPDATER = AtomicLongFieldUpdater.newUpdater(Entry.class, "queued_msgs");
+
    protected class Entry implements Runnable {
-      // This variable is only accessed from the event loop tied with the sender
-      protected final MessageBatch batch;    // used to queue messages
-      protected final MessageBatch sendingBatch; // used to send batch up
-      protected long               submitted_msgs;
-      protected long               submitted_batches;
-      protected long               queued_msgs;
-      protected long               queued_batches;
-
-      // Needs to be volatile as messageCompleted can be invoked from a different thread, all else are on event loop
       volatile boolean running = false;
-      // Needs to be volatile as messageCompleted can be invoked from a different thread, all else are on event loop
-      protected int outstandingMessageBytes = 0;
-      // This is used by async completions so that only the first has to process the outstanding update as concurrent
-      // updates will just add to this instead
-      protected final AtomicInteger asyncByteUpdate = new AtomicInteger();
+      // This variable is only accessed from the event loop tied with the sender
+      protected final ArrayDeque<Message> batch;    // used to queue messages
+      protected final Thread eventLoopThread;
+      protected final Address      sender;
 
-      protected Entry(Address sender, AsciiString cluster_name) {
-         batch=new MessageBatch(16).dest(tp.getAddress()).sender(sender).clusterName(cluster_name).multicast(sender== tp.addr());
-         sendingBatch=new MessageBatch(16).dest(tp.getAddress()).sender(sender).clusterName(cluster_name).multicast(sender== tp.addr());
+      protected volatile long               submitted_msgs;
+      protected volatile long               queued_msgs;
+
+      // Needs to be volatile as we can read it from a different thread on completion
+      protected volatile Message   messageBeingProcessed;
+      protected long batchLength = -1;
+
+
+
+      protected Entry(Address sender) {
+         this.sender=sender;
+         batch=new ArrayDeque<>();
+         eventLoopThread=Thread.currentThread();
       }
 
 
       public Entry reset() {
-         submitted_msgs=submitted_batches=queued_msgs=queued_batches=0;
+         submitted_msgs=queued_msgs=0;
          return this;
       }
 
       protected void messageCompleted(Message msg, EventLoop loop) {
-         if (loop.inEventLoop()) {
-            log.trace("%s Message %s completed synchronously ", tp.addr(), msg);
-            notifyOnWatermarkUnderflow(msg.src(), msg.getLength());
-            return;
+         if (msg != messageBeingProcessed) {
+            log.error("%s Inconsistent message completed %s versus processing %s, this is most likely a bug!", tp.addr(), msg, messageBeingProcessed);
          }
+         if (loop.inEventLoop()) {
+            if (running) {
+               log.trace("%s Message %s completed synchronously ", tp.addr(), msg);
+               messageBeingProcessed = null;
+               return;
+            }
+         }
+         log.trace("%s Message %s completed async, dispatching next message if applicable", tp.addr(), msg);
 
-         int pendingSize = asyncByteUpdate.getAndAdd(msg.getLength());
-         if (pendingSize == 0) {
-            log.trace("%s Scheduling message %s complete checks to fire on event loop ", tp.addr(), msg);
-            loop.submit(this);
+         // NOTE: we cannot set messageBeingProcessed to null as it was completed asynchronously, because if there is a
+         // pending read between our submission below that it enqueues the message
+
+         if (loop.inEventLoop()) {
+            run();
          } else {
-            log.trace("%s Added length to pending event loop message complete notification, currently %d", tp.addr(), pendingSize);
+            loop.execute(this);
          }
       }
 
@@ -170,133 +178,93 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
        * @return whether the message completed synchronously
        */
       protected boolean submitMessage(Message msg) {
-         boolean multicast=msg.getDest() == null;
-         try {
-            if(tp.statsEnabled()) {
-               messageStats(msg);
+         running = true;
+         // Following block is just copied from SubmitToThreadPool#SingleMessageHandler instead of allocating a new
+         // object and also because the constructor is protected
+         {
+            Address dest=msg.getDest();
+            boolean multicast=dest == null;
+            try {
+               if(tp.statsEnabled()) {
+                  MsgStats msg_stats=tp.getMessageStats();
+                  boolean oob=msg.isFlagSet(Message.Flag.OOB);
+                  if(oob)
+                     msg_stats.incrNumOOBMsgsReceived(1);
+                  else
+                     msg_stats.incrNumMsgsReceived(1);
+                  msg_stats.incrNumBytesReceived(msg.getLength());
+               }
+               TpHeader hdr=msg.getHeader(tp_id);
+               byte[] cname = hdr.getClusterName();
+               tp.passMessageUp(msg, cname, true, multicast, true);
             }
-            TpHeader hdr=msg.getHeader(tp_id);
-            running = true;
-            tp.passMessageUp(msg, hdr.getClusterName(), true, multicast, true);
-            running = false;
-         }
-         catch(Throwable t) {
-            log.error(Util.getMessage("PassUpFailure"), t);
-         }
+            catch(Throwable t) {
+               log.error(Util.getMessage("PassUpFailure"), t);
+            }
 
+         }
          running = false;
          // Check for the presence of the async header to tell if message may be delayed
          if (!(msg.getHeader(tp.getId()) instanceof NettyAsyncHeader)) {
-            outstandingMessageBytes = 0;
-         } else if (outstandingMessageBytes > 0) {
+            messageBeingProcessed = null;
+         } else if (messageBeingProcessed != null) {
             log.trace("%s Message %s not completed synchronously, must wait until it is complete later", tp.addr(), msg);
             return false;
          }
          return true;
       }
 
-      private void messageStats(Message msg) {
-         MsgStats msg_stats=tp.getMessageStats();
-         boolean oob=msg.isFlagSet(Message.Flag.OOB);
-         if(oob)
-            msg_stats.incrNumOOBMsgsReceived(1);
-         else
-            msg_stats.incrNumMsgsReceived(1);
-         msg_stats.incrNumBytesReceived(msg.getLength());
-      }
-
-      protected boolean submitBatch(MessageBatch batch, int batchLength) {
-         if(tp.statsEnabled()) {
-            batchStats(batch, batchLength);
-         }
-         running = true;
-         tp.passBatchUp(batch, false, true);
-         // First check if batch was fully consumed with notified messages
-         if (outstandingMessageBytes != 0) {
-            // Decrement any messages that don't have the header as they are assumed completed
-            for (Message msg : batch) {
-               if (!(msg.getHeader(tp.getId()) instanceof NettyAsyncHeader)) {
-                  outstandingMessageBytes -= msg.getLength();
-               }
-            }
-            if (outstandingMessageBytes != 0) {
-               batch.clear();
-               return false;
-            }
-         }
-         batch.clear();
-         return true;
-      }
-
-      private void batchStats(MessageBatch batch, int batchLength) {
-         int batch_size=batch.size();
-         MsgStats msg_stats=tp.getMessageStats();
-         boolean oob=batch.getMode() == MessageBatch.Mode.OOB;
-         if(oob)
-            msg_stats.incrNumOOBMsgsReceived(batch_size);
-         else
-            msg_stats.incrNumMsgsReceived(batch_size);
-         msg_stats.incrNumBatchesReceived(1);
-         msg_stats.incrNumBytesReceived(batchLength);
-         tp.avgBatchSize().add(batch_size);
-      }
-
       public boolean process(Message msg) {
-         if (outstandingMessageBytes > 0) {
-            queued_msgs++;
+         if (messageBeingProcessed != null) {
+            QUEUED_MSGS_UPDATER.incrementAndGet(this);
             batch.add(msg);
-            notifyOnWatermarkOverflow(msg.getSrc(), msg.getLength());
+            notifyOnWatermarkOverflow(msg.getSrc());
             return false;
          }
-         submitted_msgs++;
-         outstandingMessageBytes = msg.getLength();
+         SUBMITTED_MSGS_UPDATER.incrementAndGet(this);
+         messageBeingProcessed = msg;
          return submitMessage(msg);
       }
 
       public boolean process(MessageBatch batch) {
-         int batchLength = batch.length();
-         if (outstandingMessageBytes > 0) {
-            queued_batches++;
-            this.batch.transferFrom(batch, false);
-            notifyOnWatermarkOverflow(batch.sender(), batchLength);
+         if (messageBeingProcessed != null) {
+            QUEUED_MSGS_UPDATER.addAndGet(this, batch.size());
+            batch.transferFrom(batch, false);
+            notifyOnWatermarkOverflow(batch.sender());
             return false;
          }
-         submitted_batches++;
-         outstandingMessageBytes = batchLength;
-         if (submitBatch(batch, batchLength)) {
-            return true;
+         int submittedAmount = 0;
+         Iterator<Message> iter = batch.iterator();
+         while (iter.hasNext()) {
+            Message msg = iter.next();
+
+            submittedAmount++;
+            messageBeingProcessed = msg;
+            if (!submitMessage(msg)) {
+               break;
+            }
          }
-         if (outstandingMessageBytes > high_watermark) {
-            log.trace("%s High watermark met for sender %s, pausing reads", tp.addr(), batch.sender);
-            tp.down(new WatermarkOverflowEvent(batch.sender, true));
+         SUBMITTED_MSGS_UPDATER.addAndGet(this, submittedAmount);
+         int queuedAmount = 0;
+         while (iter.hasNext()) {
+            Message msg = iter.next();
+            queuedAmount++;
+            batch.add(msg);
          }
+         QUEUED_MSGS_UPDATER.addAndGet(this, queuedAmount);
+         notifyOnWatermarkOverflow(batch.sender());
          return false;
       }
 
-      private void notifyOnWatermarkOverflow(Address sender, int length) {
-         int prev = outstandingMessageBytes;
-         outstandingMessageBytes += length;
-         log.trace("%s Batch size has increased from %s to %s for sender %s", tp.addr(), prev, outstandingMessageBytes, sender);
-         if (prev < high_watermark && outstandingMessageBytes > high_watermark) {
-            log.trace("%s High watermark met for sender %s, pausing reads", tp.addr(), sender);
-            tp.down(new WatermarkOverflowEvent(sender, true));
-         }
-      }
-
-      private void notifyOnWatermarkUnderflow(Address sender, int length) {
-         int prev = outstandingMessageBytes;
-         outstandingMessageBytes -= length;
-         log.trace("%s Batch size has decreased from %s to %s for sender %s", tp.addr(), prev, outstandingMessageBytes, sender);
-         if (prev > high_watermark && outstandingMessageBytes < high_watermark) {
-            log.trace("%s Low watermark met for sender %s, resuming reads", tp.addr(), sender);
-            tp.down(new WatermarkOverflowEvent(sender, false));
-         }
-
-         int awaitingCommandBytes = outstandingMessageBytes - batch.length();
-         if (awaitingCommandBytes == 0) {
-            sendPendingBatch();
-         } else {
-            log.trace("%s Still awaiting %d bytes of downstream commands to start next batch", tp.addr(), awaitingCommandBytes);
+      private void notifyOnWatermarkOverflow(Address sender) {
+         if (batchLength < high_watermark) {
+            long newBatchLength = batchLength();
+            log.trace("%s Batch size has increased from %s to %s for sender %s", tp.addr(), batchLength, newBatchLength, sender);
+            batchLength = newBatchLength;
+            if (batchLength > high_watermark) {
+               log.trace("%s High watermark met for sender %s, pausing reads", tp.addr(), sender);
+               tp.down(new WatermarkOverflowEvent(sender, true));
+            }
          }
       }
 
@@ -306,29 +274,42 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
                batch.size(), queued_msgs, submitted_msgs);
       }
 
-      private void sendPendingBatch() {
-         if (batch.isEmpty()) {
-            log.trace("%s Batch to %s as empty, ignoring", tp.addr(), tp.addr());
-            return;
+      protected long batchLength() {
+         long size = 0;
+         for (Message message : batch) {
+            size += message.getLength();
          }
-         sendingBatch.transferFrom(batch, true);
-
-         log.trace("%s Batch has %d messages", tp.addr(), sendingBatch.size());
-         int batchLength = sendingBatch.length();
-         outstandingMessageBytes = batchLength;
-         submitBatch(sendingBatch, batchLength);
-         sendingBatch.clear();
-         if (outstandingMessageBytes > high_watermark) {
-            log.trace("%s High watermark met for sender %s after processing low water mark, pausing reads", tp.addr(), sendingBatch.sender);
-            tp.down(new WatermarkOverflowEvent(sendingBatch.sender, true));
-         }
+         return size;
       }
 
       // This code can only be invoked in the event loop for this sender
       @Override
       public void run() {
-         int bytesToDecrement = asyncByteUpdate.getAndSet(0);
-         notifyOnWatermarkUnderflow(sendingBatch.sender, bytesToDecrement);
+         long startingLength = batchLength;
+         boolean canSendLowWaterMark = high_watermark < startingLength;
+
+         assert messageBeingProcessed != null;
+         messageBeingProcessed = null;
+
+         log.trace("%s Batch has %d messages renaming", tp.addr(), batch.size());
+
+         Message msg;
+         while ((msg = batch.pollFirst()) != null) {
+            messageBeingProcessed = msg;
+            if (!submitMessage(msg)) {
+               break;
+            }
+         }
+         if (msg != null) {
+            long endingLength = batchLength();
+            batchLength = endingLength;
+            if (canSendLowWaterMark && endingLength < low_watermark) {
+               log.trace("%s Low watermark met for %s, resuming reads", tp.addr(), msg.src());
+               tp.down(new WatermarkOverflowEvent(msg.src(), false));
+            }
+         } else {
+            assert batchLength == 0;
+         }
       }
    }
 }

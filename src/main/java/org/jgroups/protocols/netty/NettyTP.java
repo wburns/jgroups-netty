@@ -64,7 +64,7 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     @Override
     public void init() throws Exception {
-        ClassConfigurator.addIfAbsent(NettyAsyncHeader.MAGIC_ID, NettyAsyncHeader.class);
+        ClassConfigurator.add(NettyAsyncHeader.MAGIC_ID, NettyAsyncHeader.class);
 
         super.init();
         if (serverChannel == null) {
