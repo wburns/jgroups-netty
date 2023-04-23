@@ -55,6 +55,8 @@ public class ReceiverHandler extends ByteToMessageDecoder {
             log.error("Buffer was not advanced expected amount: startingPos: " + startingPos + ", totalLength: " +
                   (4 + totalLength) + ", actualPos: " + msgbuf.readerIndex());
         }
+        // Just to signal to ByteToMessageDecoder that we did something
+        out.add(this);
     }
 
     @Override
