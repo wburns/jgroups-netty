@@ -125,6 +125,9 @@ public class NettyConnection {
     }
 
     public static AttributeKey<IpAddress> ADDRESS_ATTRIBUTE = AttributeKey.newInstance("jgroups-ipaddress");
+    // Unfortunately it is possible for write status to send two writeable messages in a row, this attribute
+    // store the last status update we sent and will prevent us from sending duplicate statuses
+    public static AttributeKey<Boolean> ADDRESS_WRITE_STATUS = AttributeKey.newInstance("jgroups-write-status");
 
     public final void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
         ChannelFuture cf = clientBootstrap.connect(new InetSocketAddress(addr.getIpAddress(), addr.getPort()));
@@ -135,6 +138,7 @@ public class NettyConnection {
             if (channelFuture.isSuccess()) {
                 Channel ch = channelFuture.channel();
                 ch.attr(ADDRESS_ATTRIBUTE).set(addr);
+                ch.attr(ADDRESS_WRITE_STATUS).set(Boolean.TRUE);
                 writeToChannel(ch, packed);
                 updateMap(ch, addr, false);
             } else {

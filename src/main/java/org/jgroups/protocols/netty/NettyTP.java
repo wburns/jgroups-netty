@@ -13,6 +13,7 @@ import org.jgroups.blocks.cs.netty.NettyConnection;
 import org.jgroups.conf.ClassConfigurator;
 import org.jgroups.protocols.TP;
 import org.jgroups.stack.IpAddress;
+import org.jgroups.util.MemberAvailabilityEvent;
 import org.jgroups.util.MessageCompleteEvent;
 import org.jgroups.util.NettyAsyncHeader;
 import org.jgroups.util.NonBlockingPassRegularMessagesUpDirectly;
@@ -219,7 +220,12 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     @Override
     public void channelWritabilityChanged(Address outbondAddress, boolean writeable) {
-        // TODO: way to propagate this
+        if (writeable) {
+            log.trace("%s Member %s is available for writing, sending event up to notify user to continue", addr(), outbondAddress);
+        } else {
+            log.trace("%s Member %s is no longer available for writing, sending event up to notify user to reduce pressure", addr(), outbondAddress);
+        }
+        up(new MemberAvailabilityEvent(outbondAddress, writeable));
     }
 
     @Override

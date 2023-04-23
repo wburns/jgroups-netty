@@ -11,6 +11,7 @@ import org.jgroups.stack.IpAddress;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
+import io.netty.util.Attribute;
 import netty.listeners.ChannelLifecycleListener;
 import netty.listeners.NettyReceiverListener;
 
@@ -74,7 +75,12 @@ public class ReceiverHandler extends ByteToMessageDecoder {
     @Override
     public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
         IpAddress ipAddress = ctx.channel().attr(NettyConnection.ADDRESS_ATTRIBUTE).get();
-        nettyReceiverListener.channelWritabilityChanged(ipAddress, ctx.channel().isWritable());
+        Attribute<Boolean> prevWriteStatus = ctx.channel().attr(NettyConnection.ADDRESS_WRITE_STATUS);
+        boolean isWriteable = ctx.channel().isWritable();
+        if (prevWriteStatus.get() != isWriteable) {
+            prevWriteStatus.set(isWriteable);
+            nettyReceiverListener.channelWritabilityChanged(ipAddress, isWriteable);
+        }
     }
 }
 
