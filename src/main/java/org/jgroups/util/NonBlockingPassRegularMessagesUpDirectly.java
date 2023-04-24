@@ -97,7 +97,9 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
 
    @Override
    public boolean loopback(Message msg, boolean oob) {
-      throw new UnsupportedOperationException("Loopback is not supported with this TP");
+      if(oob)
+         return super.loopback(msg, oob);
+      throw new UnsupportedOperationException("Loopback regular messages are not supported with this TP yet");
    }
 
    @Override
