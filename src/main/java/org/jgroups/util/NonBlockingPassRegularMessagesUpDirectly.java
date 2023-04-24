@@ -64,8 +64,8 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       init((NettyTP) transport);
    }
 
-   private static final int DEFAULT_LOW_WATER_MARK = 4 * 1024;
-   private static final int DEFAULT_HIGH_WATER_MARK = 12 * 1024;
+   private static final int DEFAULT_LOW_WATER_MARK = 32 * 1024;
+   private static final int DEFAULT_HIGH_WATER_MARK = 64 * 1024;
 
    @Property(description="When pending non oob messages from sender are reduced below this after previous exceeding high_watermark will allow reads to become unblocked." +
          " Must be greater than 0, defaults to " + DEFAULT_LOW_WATER_MARK)
@@ -291,7 +291,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
          assert messageBeingProcessed != null;
          messageBeingProcessed = null;
 
-         log.trace("%s Batch has %d messages renaming", tp.addr(), batch.size());
+         log.trace("%s Batch has %d messages remaining", tp.addr(), batch.size());
 
          Message msg;
          while ((msg = batch.pollFirst()) != null) {
