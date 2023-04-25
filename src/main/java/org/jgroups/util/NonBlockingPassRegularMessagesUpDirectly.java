@@ -293,22 +293,21 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
 
          log.trace("%s Batch has %d messages remaining", tp.addr(), batch.size());
 
+         int processedAmount = 0;
          Message msg;
          while ((msg = batch.pollFirst()) != null) {
             messageBeingProcessed = msg;
             if (!submitMessage(msg)) {
                break;
             }
+            processedAmount++;
          }
-         if (msg != null) {
-            long endingLength = batchLength();
-            batchLength = endingLength;
-            if (canSendLowWaterMark && endingLength < low_watermark) {
-               log.trace("%s Low watermark met for %s, resuming reads", tp.addr(), msg.src());
-               tp.down(new WatermarkOverflowEvent(msg.src(), false));
-            }
-         } else {
-            assert batchLength == 0;
+         long endingLength = batchLength();
+         batchLength = endingLength;
+         log.trace("%s Processed %d messages for %s, new batch size is %d", tp.addr(), processedAmount, sender, endingLength);
+         if (canSendLowWaterMark && endingLength < low_watermark) {
+            log.trace("%s Low watermark met for %s, resuming reads", tp.addr(), sender);
+            tp.down(new WatermarkOverflowEvent(sender, false));
          }
       }
    }

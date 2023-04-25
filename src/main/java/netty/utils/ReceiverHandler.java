@@ -54,6 +54,7 @@ public class ReceiverHandler extends ChannelInboundHandlerAdapter {
 
     @Override
     public void channelWritabilityChanged(ChannelHandlerContext ctx) throws Exception {
+        // TODO: this is only possible on client channels for now, but will change when separate them
         IpAddress ipAddress = ctx.channel().attr(NettyConnection.ADDRESS_ATTRIBUTE).get();
         Attribute<Boolean> prevWriteStatus = ctx.channel().attr(NettyConnection.ADDRESS_WRITE_STATUS);
         boolean isWriteable = ctx.channel().isWritable();
