@@ -137,8 +137,6 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       protected volatile Message   messageBeingProcessed;
       protected long batchLength = -1;
 
-
-
       protected Entry(Address sender) {
          this.sender=sender;
          batch=new ArrayDeque<>();
