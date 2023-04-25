@@ -6,11 +6,17 @@ import java.io.IOException;
 import java.net.BindException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.jgroups.Address;
+import org.jgroups.PhysicalAddress;
 import org.jgroups.logging.Log;
 import org.jgroups.stack.IpAddress;
 
@@ -23,11 +29,14 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelOption;
+import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.unix.Errors;
 import io.netty.util.AttributeKey;
+import io.netty.util.concurrent.EventExecutor;
+import io.netty.util.concurrent.MultithreadEventExecutorGroup;
 import netty.listeners.ChannelLifecycleListener;
 import netty.listeners.NettyReceiverListener;
 import netty.utils.PipelineChannelInitializer;
@@ -38,8 +47,8 @@ import netty.utils.PipelineChannelInitializer;
 public class NettyConnection {
     private final Bootstrap clientBootstrap = new Bootstrap();
     private final ServerBootstrap serverBootstrap = new ServerBootstrap();
-    private final Map<Address, Channel> clientChannelMap = new ConcurrentHashMap<>();
-    private final Map<Address, Channel> serverChannelMap = new ConcurrentHashMap<>();
+    private final Map<PhysicalAddress, Channel> clientChannelMap = new ConcurrentHashMap<>();
+    private final Map<PhysicalAddress, Channel> serverChannelMap = new ConcurrentHashMap<>();
     private byte[] replyAdder = null;
     private final int port;
     private final InetAddress bind_addr;
@@ -51,6 +60,12 @@ public class NettyConnection {
     private final Class<? extends ServerChannel> serverChannel;
     private final Class<? extends SocketChannel> clientChannel;
     private final Log log;
+
+    private final int workerGroupSizeThreshold;
+
+    private final Map<EventLoop, Set<Channel>> registeredEventLoops;
+    // Protected by registeredEventLoops monitor lock - here to prevent having to count all channels for all loops
+    private int totalRegisteredEventLoops;
 
 
     public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, Log log,
@@ -91,6 +106,20 @@ public class NettyConnection {
                 } else {
                     serverChannelMap.values().remove(channel);
                 }
+
+                synchronized (registeredEventLoops) {
+                    Set<Channel> prevChannels = registeredEventLoops.get(channel.eventLoop());
+                    // Must have never had a read before disconnecting
+                    if (prevChannels == null) {
+                        return;
+                    }
+                    totalRegisteredEventLoops--;
+                    prevChannels.remove(channel);
+                    if (prevChannels.isEmpty() && totalRegisteredEventLoops < workerGroupSizeThreshold &&
+                          (totalRegisteredEventLoops - 1) >= workerGroupSizeThreshold) {
+                        updateExecutors();
+                    }
+                }
             }
 
             @Override
@@ -98,8 +127,48 @@ public class NettyConnection {
                 updateMap(channel, sender, true);
             }
         };
+
+        int workerGroupSize;
+        if (workerGroup instanceof MultithreadEventExecutorGroup) {
+            workerGroupSize = ((MultithreadEventExecutorGroup) workerGroup).executorCount();
+        } else {
+            AtomicInteger integer = new AtomicInteger();
+            workerGroup.iterator().forEachRemaining(___ -> integer.getAndIncrement());
+            workerGroupSize = integer.get();
+        }
+        workerGroupSizeThreshold = workerGroupSize >> 1;
+        registeredEventLoops = new HashMap<>(workerGroupSize);
+
         configureServer();
         configureClient();
+    }
+
+    private void updateExecutors() {
+        Iterator<EventExecutor> iter = worker_group.iterator();
+        if (totalRegisteredEventLoops <= workerGroupSizeThreshold) {
+            for (Map.Entry<PhysicalAddress, Channel> entry : serverChannelMap.entrySet()) {
+                boolean assigned = false;
+                while (iter.hasNext()) {
+                    EventLoop eventLoop = (EventLoop) iter.next();
+                    if (registeredEventLoops.containsKey(eventLoop)) {
+                        continue;
+                    }
+                    // Can only assign the new event loop in the original address event loop
+                    entry.getValue().eventLoop().submit( () -> callback.updateExecutor(entry.getKey(), eventLoop));
+                    assigned = true;
+                    break;
+                }
+                if (!assigned) {
+                    throw new IllegalStateException("Should never get here!");
+                }
+            }
+        } else {
+            for (Map.Entry<PhysicalAddress, Channel> entry : serverChannelMap.entrySet()) {
+                // Can only assign the new event loop in the original address event loop
+                entry.getValue().eventLoop().submit( () -> callback.updateExecutor(entry.getKey(), null));
+
+            }
+        }
     }
 
     public void run() throws InterruptedException, BindException, Errors.NativeIoException {
@@ -151,7 +220,7 @@ public class NettyConnection {
         return new IpAddress(bind_addr, port);
     }
 
-    public Channel getServerChannelForAddress(Address address, boolean server) {
+    public Channel getServerChannelForAddress(PhysicalAddress address, boolean server) {
         return (server ? serverChannelMap : clientChannelMap).get(address);
     }
 
@@ -165,12 +234,31 @@ public class NettyConnection {
     }
 
     private void updateMap(Channel connected, IpAddress destAddr, boolean server) {
-        Map<Address, Channel> map = server ? serverChannelMap : clientChannelMap;
+        Map<PhysicalAddress, Channel> map = server ? serverChannelMap : clientChannelMap;
         Channel channel = map.get(destAddr);
         if (channel != null && channel.id() == connected.id())
             return;
         log.trace("%s:%s Destination is server: %s with address %s bound to %s", bind_addr, port, server, destAddr, Thread.currentThread());
         map.put(destAddr, connected);
+
+        if (server) {
+            EventLoop eventLoop = connected.eventLoop();
+            if (registeredEventLoops == null) {
+                return;
+            }
+            synchronized (registeredEventLoops) {
+                totalRegisteredEventLoops++;
+                Set<Channel> prevChannels = registeredEventLoops.get(eventLoop);
+                if (prevChannels != null) {
+                    prevChannels.add(connected);
+                } else {
+                    prevChannels = new HashSet<>();
+                    prevChannels.add(connected);
+                    registeredEventLoops.put(eventLoop, prevChannels);
+                    updateExecutors();
+                }
+            }
+        }
     }
 
     private void configureClient() {

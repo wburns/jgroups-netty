@@ -3,8 +3,6 @@ package netty.utils;
 import java.io.DataInput;
 
 import org.jgroups.blocks.cs.netty.NettyConnection;
-import org.jgroups.logging.Log;
-import org.jgroups.logging.LogFactory;
 import org.jgroups.stack.IpAddress;
 
 import io.netty.channel.ChannelHandlerContext;
@@ -38,17 +36,12 @@ public class ReceiverHandler extends ChannelInboundHandlerAdapter {
     }
 
     @Override
-    public void channelActive(ChannelHandlerContext ctx) throws Exception {
-        super.channelActive(ctx);
-    }
-
-    @Override
-    public void channelInactive(ChannelHandlerContext ctx) {
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
         lifecycleListener.channelInactive(ctx.channel());
     }
 
     @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
+    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
         nettyReceiverListener.onError(cause);
     }
 

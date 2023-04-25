@@ -2,6 +2,8 @@ package org.jgroups.protocols.netty;
 
 import java.io.DataInput;
 import java.net.BindException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeUnit;
 
 import org.jgroups.Address;
@@ -21,8 +23,10 @@ import org.jgroups.util.Util;
 import org.jgroups.util.WatermarkOverflowEvent;
 
 import io.netty.channel.Channel;
+import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
+import io.netty.channel.SingleThreadEventLoop;
 import io.netty.channel.epoll.EpollEventLoopGroup;
 import io.netty.channel.epoll.EpollServerSocketChannel;
 import io.netty.channel.epoll.EpollSocketChannel;
@@ -58,6 +62,8 @@ public class NettyTP extends TP implements NettyReceiverListener {
     private Class<? extends ServerChannel> serverChannel;
     private Class<? extends SocketChannel> clientChannel;
 
+    protected ConcurrentMap<PhysicalAddress, EventLoop> pendingExecutorUpdates;
+
     public NettyTP() {
         msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
     }
@@ -67,12 +73,14 @@ public class NettyTP extends TP implements NettyReceiverListener {
         ClassConfigurator.addIfAbsent(NettyAsyncHeader.MAGIC_ID, NettyAsyncHeader.class);
 
         super.init();
+        pendingExecutorUpdates=new ConcurrentHashMap<>();
         if (serverChannel == null) {
             serverChannel = serverChannel();
         }
         if (clientChannel == null) {
             clientChannel = clientChannel();
         }
+
         if (!(msg_processing_policy instanceof NonBlockingPassRegularMessagesUpDirectly)) {
             log.debug("msg_processing_policy was set, ignoring as NettyTP requires it specific policy");
             msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
@@ -192,30 +200,39 @@ public class NettyTP extends TP implements NettyReceiverListener {
         receive(sender, in);
     }
 
-    PhysicalAddress toPhysicalAddress(Address address) {
+    public NettyConnection getServer() {
+        return server;
+    }
+
+    public PhysicalAddress toPhysicalAddress(Address address) {
         if (address instanceof PhysicalAddress) {
             return (PhysicalAddress) address;
         }
-        return (PhysicalAddress) down(new Event(Event.GET_PHYSICAL_ADDRESS, address));
+        return logical_addr_cache.get(address);
     }
 
     @Override
     public Object down(Event evt) {
-        if (evt.type() == Event.USER_DEFINED) {
-            if (evt instanceof MessageCompleteEvent) {
-                Message msg = evt.getArg();
-                Address physicalAddress = toPhysicalAddress(msg.src());
-                Channel channel = server.getServerChannelForAddress(physicalAddress, true);
-                ((NonBlockingPassRegularMessagesUpDirectly) msg_processing_policy).completedMessage(msg, channel.eventLoop());
-            } else if (evt instanceof WatermarkOverflowEvent) {
-                Address address = ((WatermarkOverflowEvent) evt).address();
-                Address physicalAddress = toPhysicalAddress(address);
+        Object retVal = super.down(evt);
+        switch (evt.type()) {
+            case Event.TMP_VIEW:
+            case Event.VIEW_CHANGE:
+                ((NonBlockingPassRegularMessagesUpDirectly)msg_processing_policy).viewChange(view.getMembers());
+                break;
+            case Event.USER_DEFINED:
+                if (evt instanceof MessageCompleteEvent) {
+                    Message msg = evt.getArg();
+                    ((NonBlockingPassRegularMessagesUpDirectly) msg_processing_policy).completedMessage(msg);
+                } else if (evt instanceof WatermarkOverflowEvent) {
+                    Address address = ((WatermarkOverflowEvent) evt).address();
+                    PhysicalAddress physicalAddress = toPhysicalAddress(address);
 
-                Channel channel = server.getServerChannelForAddress(physicalAddress, true);
-                channel.config().setAutoRead(!((WatermarkOverflowEvent) evt).wasOverFlow());
-            }
+                    Channel channel = server.getServerChannelForAddress(physicalAddress, true);
+                    channel.config().setAutoRead(!((WatermarkOverflowEvent) evt).wasOverFlow());
+                }
+                break;
         }
-        return super.down(evt);
+        return retVal;
     }
 
     @Override
@@ -226,6 +243,18 @@ public class NettyTP extends TP implements NettyReceiverListener {
             log.trace("%s Member %s is no longer available for writing, sending event up to notify user to reduce pressure", addr(), outbondAddress);
         }
         up(new MemberAvailabilityEvent(outbondAddress, writeable));
+    }
+
+    @Override
+    public void updateExecutor(PhysicalAddress address, EventLoop eventLoop) {
+        pendingExecutorUpdates.put(address, eventLoop);
+        if (((NonBlockingPassRegularMessagesUpDirectly) msg_processing_policy).updateExecutor(address, eventLoop)) {
+            pendingExecutorUpdates.remove(address);
+        }
+    }
+
+    public ConcurrentMap<PhysicalAddress, EventLoop> getPendingExecutorUpdates() {
+        return pendingExecutorUpdates;
     }
 
     @Override
