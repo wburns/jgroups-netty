@@ -136,6 +136,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       // Needs to be volatile as we can read it from a different thread on completion
       protected volatile Message   messageBeingProcessed;
       protected long batchLength = -1;
+      protected boolean sentOverFlow;
 
       protected Entry(Address sender) {
          this.sender=sender;
@@ -264,6 +265,7 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
             if (batchLength > high_watermark) {
                log.trace("%s High watermark met for sender %s, pausing reads", tp.addr(), sender);
                tp.down(new WatermarkOverflowEvent(sender, true));
+               sentOverFlow = true;
             }
          }
       }
@@ -285,9 +287,6 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       // This code can only be invoked in the event loop for this sender
       @Override
       public void run() {
-         long startingLength = batchLength;
-         boolean canSendLowWaterMark = high_watermark < startingLength;
-
          assert messageBeingProcessed != null;
          messageBeingProcessed = null;
 
@@ -305,9 +304,10 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
          long endingLength = batchLength();
          batchLength = endingLength;
          log.trace("%s Processed %d messages for %s, new batch size is %d", tp.addr(), processedAmount, sender, endingLength);
-         if (canSendLowWaterMark && endingLength < low_watermark) {
+         if (sentOverFlow && endingLength < low_watermark) {
             log.trace("%s Low watermark met for %s, resuming reads", tp.addr(), sender);
             tp.down(new WatermarkOverflowEvent(sender, false));
+            sentOverFlow = false;
          }
       }
    }
