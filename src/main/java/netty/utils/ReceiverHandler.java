@@ -1,6 +1,7 @@
 package netty.utils;
 
 import java.io.DataInput;
+import java.io.InputStream;
 
 import org.jgroups.blocks.cs.netty.NettyConnection;
 import org.jgroups.stack.IpAddress;
@@ -32,7 +33,14 @@ public class ReceiverHandler extends ChannelInboundHandlerAdapter {
 
         lifecycleListener.channelRead(ctx.channel(), sender);
 
-        nettyReceiverListener.onReceive(sender, input);
+        try {
+            nettyReceiverListener.onReceive(sender, input);
+        } catch (Throwable t) {
+            // If there was an error, consume the rest of input
+            input.skipBytes(Integer.MAX_VALUE);
+            throw t;
+        }
+        assert !(input instanceof InputStream) || ((InputStream) input).available() == 0;
     }
 
     @Override

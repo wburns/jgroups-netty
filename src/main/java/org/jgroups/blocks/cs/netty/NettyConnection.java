@@ -1,5 +1,7 @@
 package org.jgroups.blocks.cs.netty;
 
+import static org.jgroups.protocols.TP.MULTICAST;
+
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -12,14 +14,19 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 import org.jgroups.Address;
+import org.jgroups.ByteBufMessage;
+import org.jgroups.BytesMessage;
 import org.jgroups.PhysicalAddress;
+import org.jgroups.Version;
 import org.jgroups.logging.Log;
+import org.jgroups.protocols.TP;
 import org.jgroups.stack.IpAddress;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufOutputStream;
 import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
@@ -147,7 +154,7 @@ public class NettyConnection {
             connectAndSend(destAddr, data, offset, length);
     }
 
-    public final void send(IpAddress destAddr, boolean oob, ByteBuf msg) {
+    public final void send(IpAddress destAddr, boolean oob, ByteBufMessage msg) {
         Channel opened = null;
         if (oob) {
             // OOB messages use the client socket until the server finally gets its connected client
@@ -158,8 +165,14 @@ public class NettyConnection {
         if (opened == null) {
             opened = clientChannelMap.get(destAddr);
         }
-        if (opened != null)
-            packAndFlushToChannel(opened, msg);
+        if (opened != null) {
+            if (opened.eventLoop().inEventLoop()) {
+                packAndFlushToChannel(opened, msg);
+            } else {
+                Channel finalChannel = opened;
+                opened.eventLoop().submit(() -> packAndFlushToChannel(finalChannel, msg));
+            }
+        }
         else
             connectAndSend(destAddr, msg);
     }
@@ -173,7 +186,7 @@ public class NettyConnection {
         connectAndSend(addr, ch -> packAndFlushToChannel(ch, data, offset, length));
     }
 
-    public final void connectAndSend(IpAddress addr, ByteBuf msg) {
+    public final void connectAndSend(IpAddress addr, ByteBufMessage msg) {
         connectAndSend(addr, ch -> packAndFlushToChannel(ch, msg));
     }
 
@@ -212,16 +225,35 @@ public class NettyConnection {
         writeAndFlushToChannel(ch, packed);
     }
 
-    private void packAndFlushToChannel(Channel ch, ByteBuf data) {
-        int bufferSize = (Integer.BYTES * 2) + replyAdder.length;
+    private void packAndFlushToChannel(Channel ch, ByteBufMessage msg) {
+        int bufferSize = (Integer.BYTES * 2) + replyAdder.length + TP.MSG_OVERHEAD + msg.nonPayloadSize();
         ByteBuf first = ch.alloc().buffer(bufferSize, bufferSize);
-        first.writeInt(Integer.BYTES + replyAdder.length + data.readableBytes());
-        first.writeInt(replyAdder.length);
+        ByteBuf payload = msg.getBuf();
+        first.writeInt(bufferSize - Integer.BYTES + payload.readableBytes());
         first.writeBytes(replyAdder);
-        assert first.writerIndex() == first.capacity();
-        // We send as two ByteBuf so we don't want to modify the original
-        ch.write(first, ch.voidPromise());
-        writeAndFlushToChannel(ch, data);
+
+        try (ByteBufOutputStream bbos = new ByteBufOutputStream(first)) {
+
+            byte flags = 0;
+            bbos.writeShort(Version.version); // write the version
+            if (msg.getDest() == null)
+                flags += MULTICAST;
+            bbos.writeByte(flags);
+            // TODO: for now have read only used a BytesMessage
+            bbos.writeShort(BytesMessage.BYTES_MSG);
+
+            msg.writeNonPayload(bbos);
+            // TODO: this is written to tell the bytes how big the buffer is
+            bbos.writeInt(payload.readableBytes());
+
+            assert first.writerIndex() == first.capacity();
+            // We send as two ByteBuf so we don't want to modify the original
+            ch.write(first, ch.voidPromise());
+            writeAndFlushToChannel(ch, payload);
+        } catch (IOException e) {
+            // Shouldn't be possible
+            throw new RuntimeException(e);
+        }
     }
 
     private static void writeAndFlushToChannel(Channel ch, ByteBuf data) {
@@ -266,11 +298,11 @@ public class NettyConnection {
     }
 
     private static ByteBuf pack(ByteBufAllocator allocator, byte[] data, int offset, int length, byte[] replyAdder) {
-        int allocSize = Integer.BYTES + length + Integer.BYTES + replyAdder.length;
+        // TODO: we can optimize away the replyAddr later
+        int allocSize = Integer.BYTES + length + replyAdder.length;
         ByteBuf buf = allocator.buffer(allocSize, allocSize);
         // size of data + size replyAddr.length field  + space for reply addr bytes = total frame size
-        buf.writeInt(length + replyAdder.length + Integer.BYTES);  //encode frame size and data length
-        buf.writeInt(replyAdder.length);
+        buf.writeInt(length + replyAdder.length);  //encode frame size and data length
         buf.writeBytes(replyAdder);
         if (data != null)
             buf.writeBytes(data, offset, length);

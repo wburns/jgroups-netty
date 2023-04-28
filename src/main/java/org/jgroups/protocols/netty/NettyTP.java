@@ -2,9 +2,12 @@ package org.jgroups.protocols.netty;
 
 import java.io.DataInput;
 import java.net.BindException;
+import java.util.Iterator;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
 import org.jgroups.Address;
+import org.jgroups.ByteBufMessage;
 import org.jgroups.Event;
 import org.jgroups.Message;
 import org.jgroups.PhysicalAddress;
@@ -20,6 +23,7 @@ import org.jgroups.util.NonBlockingPassRegularMessagesUpDirectly;
 import org.jgroups.util.Util;
 import org.jgroups.util.WatermarkOverflowEvent;
 
+import io.netty.buffer.ByteBufAllocator;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
@@ -59,6 +63,8 @@ public class NettyTP extends TP implements NettyReceiverListener {
     private Class<? extends ServerChannel> serverChannel;
     private Class<? extends SocketChannel> clientChannel;
 
+    private boolean initCalledPrior;
+
     public NettyTP() {
         msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
     }
@@ -82,6 +88,11 @@ public class NettyTP extends TP implements NettyReceiverListener {
             log.debug("msg_processing_policy was set, ignoring as NettyTP requires it specific policy");
             msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
             msg_processing_policy.init(this);
+        }
+
+        if (!initCalledPrior) {
+            msg_factory.register(ByteBufMessage.BYTE_BUF_MSG, () -> new ByteBufMessage(ByteBufAllocator.DEFAULT));
+            initCalledPrior = true;
         }
     }
 
@@ -270,6 +281,45 @@ public class NettyTP extends TP implements NettyReceiverListener {
     @Override
     protected PhysicalAddress getPhysicalAddress() {
         return selfAddress;
+    }
+
+    @Override
+    protected void _send(Message msg, Address dest) {
+        if (msg instanceof ByteBufMessage) {
+            // Note this completely bypasses the bundler
+            ByteBufMessage byteBufMessage = (ByteBufMessage) msg;
+            if (dest == null) {
+                Iterator<Address> addressIterator = members.iterator();
+                while (addressIterator.hasNext()) {
+                    Address mbr = addressIterator.next();
+                    PhysicalAddress target=mbr instanceof PhysicalAddress? (PhysicalAddress)mbr : logical_addr_cache.get(mbr);
+                    if (Objects.equals(local_physical_addr, target)) {
+                        continue;
+                    }
+                    ByteBufMessage msgToUse;
+                    // Have to use a copy for each member except last we use the original message
+                    if (addressIterator.hasNext()) {
+                        msgToUse = (ByteBufMessage) byteBufMessage.copy(true, true);
+                    } else {
+                        msgToUse = byteBufMessage;
+                    }
+                    try {
+                        byteBufSend(msgToUse, target);
+                    }
+                    catch(Throwable t) {
+                        log.error(Util.getMessage("FailureSendingToPhysAddr"), local_addr, mbr, t);
+                    }
+                }
+            } else {
+                byteBufSend(byteBufMessage, dest);
+            }
+        } else {
+            super._send(msg, dest);
+        }
+    }
+
+    private void byteBufSend(ByteBufMessage msg, Address dest) {
+        server.send((IpAddress) toPhysicalAddress(dest), isOOB.get(), msg);
     }
 
     private boolean createServer() {
