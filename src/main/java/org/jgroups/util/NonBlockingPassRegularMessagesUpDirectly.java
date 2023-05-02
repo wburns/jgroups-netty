@@ -11,6 +11,7 @@ import java.util.stream.Collectors;
 import org.jgroups.Address;
 import org.jgroups.Message;
 import org.jgroups.PhysicalAddress;
+import org.jgroups.Refcountable;
 import org.jgroups.annotations.ManagedOperation;
 import org.jgroups.annotations.Property;
 import org.jgroups.protocols.MsgStats;
@@ -117,10 +118,27 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
    @Override
    public boolean process(Message msg, boolean oob) {
       if (oob) {
-         return super.process(msg, true);
+         return tp.getThreadPool().execute(new CloseSingleMessageHandler(msg));
       }
       Entry entry = senderTable.computeIfAbsent(msg.getSrc(), Entry::new);
       return entry.process(msg);
+   }
+
+   class CloseSingleMessageHandler extends SingleMessageHandler {
+      protected CloseSingleMessageHandler(Message msg) {
+         super(msg);
+      }
+
+      @Override
+      public void run() {
+         try {
+            super.run();
+         } finally {
+            if (msg instanceof Refcountable) {
+               ((Refcountable<?>) msg).decr();
+            }
+         }
+      }
    }
 
    private static final AtomicLongFieldUpdater<Entry> SUBMITTED_MSGS_UPDATER = AtomicLongFieldUpdater.newUpdater(Entry.class, "submitted_msgs");
@@ -167,6 +185,9 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
       protected void messageCompleted(Message msg) {
          if (msg != messageBeingProcessed) {
             log.error("%s Inconsistent message completed %s versus processing %s, this is most likely a bug!", tp.addr(), msg, messageBeingProcessed);
+         }
+         if (msg instanceof Refcountable) {
+            ((Refcountable<?>) msg).decr();
          }
          if (ourEventLoop.inEventLoop()) {
             if (running) {
@@ -231,6 +252,9 @@ public class NonBlockingPassRegularMessagesUpDirectly extends SubmitToThreadPool
                log.trace("%s Message %s assumed to complete synchronously as no header was present", tp.addr(), msg);
             }
             messageBeingProcessed = null;
+            if (msg instanceof Refcountable) {
+               ((Refcountable<?>) msg).decr();
+            }
          } else if (messageBeingProcessed != null) {
             if (tp.isTrace()) {
                log.trace("%s Message %s not completed synchronously, must wait until it is complete later", tp.addr(), msg);

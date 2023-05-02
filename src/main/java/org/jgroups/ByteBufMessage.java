@@ -7,7 +7,6 @@ import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.function.Supplier;
 
-import org.jgroups.util.Bits;
 import org.jgroups.util.ByteArray;
 import org.jgroups.util.ByteArrayDataInputStream;
 import org.jgroups.util.ByteBufferInputStream;
@@ -16,12 +15,14 @@ import org.jgroups.util.Util;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
 import io.netty.buffer.Unpooled;
+import netty.utils.ExposedByteBufInputStream;
 
-public class ByteBufMessage extends BaseMessage {
+public class ByteBufMessage extends BaseMessage implements Refcountable<ByteBufMessage> {
    static public final short BYTE_BUF_MSG        = 1234;
 
    private final ByteBufAllocator allocator;
    private ByteBuf buf;
+   private byte[] array;
 
    public ByteBufMessage(ByteBufAllocator allocator, ByteBuf buf) {
       this(allocator);
@@ -48,12 +49,16 @@ public class ByteBufMessage extends BaseMessage {
 
    @Override
    public boolean hasArray() {
-      return false;
+      return buf != null;
    }
 
    @Override
    public byte[] getArray() {
-      throw new UnsupportedOperationException();
+      if (array == null && buf != null) {
+         array = new byte[buf.readableBytes()];
+         buf.getBytes(buf.readerIndex(), array, 0, buf.readableBytes());
+      }
+      return array;
    }
 
    @Override
@@ -63,7 +68,7 @@ public class ByteBufMessage extends BaseMessage {
 
    @Override
    public int getLength() {
-      return buf.readableBytes();
+      return buf != null ? buf.readableBytes() : 0;
    }
 
    @Override
@@ -88,7 +93,7 @@ public class ByteBufMessage extends BaseMessage {
 
    @Override
    public void writePayload(DataOutput out) throws IOException {
-      Bits.writeIntCompressed(buf.readableBytes(), out);
+      out.writeInt(buf.readableBytes());
       buf.forEachByte(b -> {
          out.writeByte(b);
          return true;
@@ -97,8 +102,19 @@ public class ByteBufMessage extends BaseMessage {
 
    @Override
    public void readPayload(DataInput in) throws IOException {
-      int length = Bits.readIntCompressed(in);
-      if (in instanceof ByteArrayDataInputStream) {
+      int length = in.readInt();
+      if (length <= 0) {
+         return;
+      }
+      if (in instanceof ExposedByteBufInputStream) {
+         ByteBuf buffer = ((ExposedByteBufInputStream) in).getBuf();
+         int endOffset = ((ExposedByteBufInputStream) in).getEndReadIndex();
+         int readIndex = buffer.readerIndex();
+         assert length == endOffset - readIndex;
+         buf = buffer.retainedSlice(readIndex, length);
+         // Advance buffer
+         buffer.readerIndex(readIndex + length);
+      } else if (in instanceof ByteArrayDataInputStream) {
          buf = fromByteArrayDataInputStream((ByteArrayDataInputStream) in, length);
       } else if (in instanceof ByteBufferInputStream) {
          buf = fromByteBufferInputStream((ByteBufferInputStream) in, length);
@@ -181,7 +197,20 @@ public class ByteBufMessage extends BaseMessage {
 
    @Override
    protected Message copyPayload(Message copy) {
+      assert ((ByteBufMessage) copy).buf == null;
       ((ByteBufMessage) copy).buf = buf.retainedSlice();
       return super.copyPayload(copy);
+   }
+
+   @Override
+   public ByteBufMessage incr() {
+      buf.retain();
+      return this;
+   }
+
+   @Override
+   public ByteBufMessage decr() {
+      buf.release();
+      return this;
    }
 }

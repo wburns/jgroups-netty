@@ -15,7 +15,6 @@ import java.util.function.Consumer;
 
 import org.jgroups.Address;
 import org.jgroups.ByteBufMessage;
-import org.jgroups.BytesMessage;
 import org.jgroups.PhysicalAddress;
 import org.jgroups.Version;
 import org.jgroups.logging.Log;
@@ -93,9 +92,7 @@ public class NettyConnection {
             }
 
             @Override
-            public void channelActive(ChannelHandlerContext ctx) {
-                ctx.channel().attr(ADDRESS_WRITE_STATUS).set(Boolean.TRUE);
-            }
+            public void channelActive(ChannelHandlerContext ctx) { }
         };
 
         serverLifecycleListener = new ChannelLifecycleListener() {
@@ -196,6 +193,7 @@ public class NettyConnection {
             if (channelFuture.isSuccess()) {
                 Channel ch = channelFuture.channel();
                 ch.attr(ADDRESS_ATTRIBUTE).set(addr);
+                ch.attr(ADDRESS_WRITE_STATUS).set(Boolean.TRUE);
                 consumer.accept(ch);
                 updateMap(ch, addr, false);
             } else {
@@ -239,8 +237,7 @@ public class NettyConnection {
             if (msg.getDest() == null)
                 flags += MULTICAST;
             bbos.writeByte(flags);
-            // TODO: for now have read only used a BytesMessage
-            bbos.writeShort(BytesMessage.BYTES_MSG);
+            bbos.writeShort(msg.getType());
 
             msg.writeNonPayload(bbos);
             // TODO: this is written to tell the bytes how big the buffer is

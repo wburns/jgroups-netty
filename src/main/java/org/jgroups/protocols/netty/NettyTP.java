@@ -2,7 +2,6 @@ package org.jgroups.protocols.netty;
 
 import java.io.DataInput;
 import java.net.BindException;
-import java.util.Iterator;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 
@@ -154,6 +153,7 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     @Override
     public void start() throws Exception {
+        super.start();
         initializeNettyGroupsIfNecessary();
         // We have to set this before actually being connected, because it is possible the server/client may
         // get a request before we assign the server reference
@@ -170,7 +170,6 @@ public class NettyTP extends TP implements NettyReceiverListener {
             selfAddress = null;
             throw new BindException("No port found to bind within port range");
         }
-        super.start();
     }
 
     private void initializeNettyGroupsIfNecessary() {
@@ -286,29 +285,38 @@ public class NettyTP extends TP implements NettyReceiverListener {
     @Override
     protected void _send(Message msg, Address dest) {
         if (msg instanceof ByteBufMessage) {
+            if(stats) {
+                msg_stats.incrNumMsgsSent(1);
+                msg_stats.incrNumBytesSent(msg.size());
+            }
             // Note this completely bypasses the bundler
             ByteBufMessage byteBufMessage = (ByteBufMessage) msg;
             if (dest == null) {
-                Iterator<Address> addressIterator = members.iterator();
-                while (addressIterator.hasNext()) {
-                    Address mbr = addressIterator.next();
-                    PhysicalAddress target=mbr instanceof PhysicalAddress? (PhysicalAddress)mbr : logical_addr_cache.get(mbr);
+                // Not we send the original message first and then copy afterwards - this is safe because refCnt is 2
+                boolean sentOriginal = false;
+                for (Address mbr : members) {
+                    PhysicalAddress target = mbr instanceof PhysicalAddress ? (PhysicalAddress) mbr : logical_addr_cache.get(mbr);
                     if (Objects.equals(local_physical_addr, target)) {
                         continue;
                     }
                     ByteBufMessage msgToUse;
                     // Have to use a copy for each member except last we use the original message
-                    if (addressIterator.hasNext()) {
+                    if (sentOriginal) {
+                        // TODO: maybe we can check something to reuse the message in some cases?
                         msgToUse = (ByteBufMessage) byteBufMessage.copy(true, true);
                     } else {
                         msgToUse = byteBufMessage;
+                        sentOriginal = true;
                     }
                     try {
                         byteBufSend(msgToUse, target);
-                    }
-                    catch(Throwable t) {
+                    } catch (Throwable t) {
                         log.error(Util.getMessage("FailureSendingToPhysAddr"), local_addr, mbr, t);
                     }
+                }
+                if (!sentOriginal) {
+                    // When message is not sent down the ByteBuf is never released by channel
+                    byteBufMessage.decr();
                 }
             } else {
                 byteBufSend(byteBufMessage, dest);
