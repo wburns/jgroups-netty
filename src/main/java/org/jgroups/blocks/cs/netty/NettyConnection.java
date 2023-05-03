@@ -197,7 +197,7 @@ public class NettyConnection {
                 consumer.accept(ch);
                 updateMap(ch, addr, false);
             } else {
-                log.warn("Unable to connect to " + addr, channelFuture.cause());
+                log.trace("Unable to connect to " + addr, channelFuture.cause());
             }
             clientFuturesMap.remove(addr);
         });
@@ -269,7 +269,7 @@ public class NettyConnection {
         if (channel != null) {
             throw new IllegalStateException("Address " + destAddr + " already registered as server: " + server + ", second attempt received!");
         }
-        log.info("%s:%s Destination is server: %s with address %s bound to %s", bind_addr, port, server, destAddr, Thread.currentThread());
+        log.debug("%s:%s Destination is server: %s with address %s bound to %s", bind_addr, port, server, destAddr, Thread.currentThread());
         connected.attr(ADDRESS_ATTRIBUTE).set(destAddr);
     }
 

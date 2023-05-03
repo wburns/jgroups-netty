@@ -13,6 +13,7 @@ import org.jgroups.PhysicalAddress;
 import org.jgroups.annotations.Property;
 import org.jgroups.blocks.cs.netty.NettyConnection;
 import org.jgroups.conf.ClassConfigurator;
+import org.jgroups.protocols.NoBundler;
 import org.jgroups.protocols.TP;
 import org.jgroups.stack.IpAddress;
 import org.jgroups.util.MemberAvailabilityEvent;
@@ -66,6 +67,7 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     public NettyTP() {
         msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
+        bundler_type = "no-bundler";
     }
 
     public NettyConnection getServer() {
@@ -87,6 +89,12 @@ public class NettyTP extends TP implements NettyReceiverListener {
             log.debug("msg_processing_policy was set, ignoring as NettyTP requires it specific policy");
             msg_processing_policy = new NonBlockingPassRegularMessagesUpDirectly();
             msg_processing_policy.init(this);
+        }
+
+        if (!(bundler instanceof NoBundler)) {
+            log.debug("bundler was set, ignoring as NettyTP requires NoBundler");
+            bundler = new NoBundler();
+            bundler.init(this);
         }
 
         if (!initCalledPrior) {
