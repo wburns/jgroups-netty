@@ -50,7 +50,6 @@ public class NettyConnection {
     private final Map<PhysicalAddress, Channel> clientChannelMap = new ConcurrentHashMap<>();
     private final Map<IpAddress, ChannelFuture> clientFuturesMap = new ConcurrentHashMap<>();
     private final Map<PhysicalAddress, Channel> serverChannelMap = new ConcurrentHashMap<>();
-    private byte[] replyAdder = null;
     private final int port;
     private final InetAddress bind_addr;
     private final EventLoopGroup boss_group; // Only handles incoming connections
@@ -61,6 +60,7 @@ public class NettyConnection {
     private final Class<? extends ServerChannel> serverChannel;
     private final Class<? extends SocketChannel> clientChannel;
     private final Log log;
+    public byte[] replyAdder = null;
 
 
     public NettyConnection(InetAddress bind_addr, int port, NettyReceiverListener callback, Log log,
@@ -134,23 +134,6 @@ public class NettyConnection {
         }
     }
 
-    public final void send(IpAddress destAddr, boolean oob, byte[] data, int offset, int length) {
-        Channel opened = null;
-        if (oob) {
-            // OOB messages use the client socket until the server finally gets its connected client
-            // By using the server channel for OOB it won't mess with the back pressure of normal messages as they
-            // tend to be much higher weight since it can only run sequentially.
-            opened = serverChannelMap.get(destAddr);
-        }
-        if (opened == null) {
-            opened = clientChannelMap.get(destAddr);
-        }
-        if (opened != null)
-            packAndFlushToChannel(opened, data, offset, length);
-        else
-            connectAndSend(destAddr, data, offset, length);
-    }
-
     public final void send(IpAddress destAddr, boolean oob, ByteBufMessage msg) {
         Channel opened = null;
         if (oob) {
@@ -178,10 +161,6 @@ public class NettyConnection {
     // Unfortunately it is possible for write status to send two writeable messages in a row, this attribute
     // store the last status update we sent and will prevent us from sending duplicate statuses
     public static AttributeKey<Boolean> ADDRESS_WRITE_STATUS = AttributeKey.newInstance("jgroups-write-status");
-
-    public final void connectAndSend(IpAddress addr, byte[] data, int offset, int length) {
-        connectAndSend(addr, ch -> packAndFlushToChannel(ch, data, offset, length));
-    }
 
     public final void connectAndSend(IpAddress addr, ByteBufMessage msg) {
         connectAndSend(addr, ch -> packAndFlushToChannel(ch, msg));
@@ -218,11 +197,6 @@ public class NettyConnection {
         return (server ? serverChannelMap : clientChannelMap).get(address);
     }
 
-    private void packAndFlushToChannel(Channel ch, byte[] data, int offset, int length) {
-        ByteBuf packed = pack(ch.alloc(), data, offset, length, replyAdder);
-        writeAndFlushToChannel(ch, packed);
-    }
-
     private void packAndFlushToChannel(Channel ch, ByteBufMessage msg) {
         int bufferSize = (Integer.BYTES * 2) + replyAdder.length + TP.MSG_OVERHEAD + msg.nonPayloadSize();
         ByteBuf first = ch.alloc().buffer(bufferSize, bufferSize);
@@ -251,6 +225,29 @@ public class NettyConnection {
             // Shouldn't be possible
             throw new RuntimeException(e);
         }
+    }
+
+    public final void send(IpAddress destAddr, boolean oob, ByteBuf buf) {
+        Channel opened = null;
+        if (oob) {
+            // OOB messages use the client socket until the server finally gets its connected client
+            // By using the server channel for OOB it won't mess with the back pressure of normal messages as they
+            // tend to be much higher weight since it can only run sequentially.
+            opened = serverChannelMap.get(destAddr);
+        }
+        if (opened == null) {
+            opened = clientChannelMap.get(destAddr);
+        }
+        if (opened != null) {
+            if (opened.eventLoop().inEventLoop()) {
+                writeAndFlushToChannel(opened, buf);
+            } else {
+                Channel finalChannel = opened;
+                opened.eventLoop().submit(() -> writeAndFlushToChannel(finalChannel, buf));
+            }
+        }
+        else
+            connectAndSend(destAddr, ch -> writeAndFlushToChannel(ch, buf));
     }
 
     private static void writeAndFlushToChannel(Channel ch, ByteBuf data) {

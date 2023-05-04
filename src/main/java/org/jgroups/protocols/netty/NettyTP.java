@@ -1,6 +1,7 @@
 package org.jgroups.protocols.netty;
 
 import java.io.DataInput;
+import java.io.IOException;
 import java.net.BindException;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
@@ -10,6 +11,7 @@ import org.jgroups.ByteBufMessage;
 import org.jgroups.Event;
 import org.jgroups.Message;
 import org.jgroups.PhysicalAddress;
+import org.jgroups.Version;
 import org.jgroups.annotations.Property;
 import org.jgroups.blocks.cs.netty.NettyConnection;
 import org.jgroups.conf.ClassConfigurator;
@@ -23,7 +25,10 @@ import org.jgroups.util.NonBlockingPassRegularMessagesUpDirectly;
 import org.jgroups.util.Util;
 import org.jgroups.util.WatermarkOverflowEvent;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufAllocator;
+import io.netty.buffer.ByteBufOutputStream;
+import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.ServerChannel;
@@ -40,7 +45,6 @@ import io.netty.channel.unix.Errors;
 import io.netty.incubator.channel.uring.IOUringEventLoopGroup;
 import io.netty.incubator.channel.uring.IOUringServerSocketChannel;
 import io.netty.incubator.channel.uring.IOUringSocketChannel;
-import io.netty.util.concurrent.FastThreadLocal;
 import netty.listeners.NettyReceiverListener;
 
 /***
@@ -144,14 +148,7 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     @Override
     public void sendUnicast(PhysicalAddress dest, byte[] data, int offset, int length) throws Exception {
-        IpAddress destAddr = dest != null ? (IpAddress) dest : null;
-
-        if (destAddr != selfAddress) {
-            server.send(destAddr, isOOB.get(), data, offset, length);
-
-        } else {
-            //TODO: loop back
-        }
+        throw new UnsupportedOperationException();
     }
 
     @Override
@@ -235,14 +232,6 @@ public class NettyTP extends TP implements NettyReceiverListener {
         return (PhysicalAddress) down(new Event(Event.GET_PHYSICAL_ADDRESS, address));
     }
 
-    private final static FastThreadLocal<Boolean> isOOB = new FastThreadLocal<>();
-    @Override
-    public Object down(Message msg) {
-        isOOB.set(msg.isFlagSet(Message.Flag.OOB));
-
-        return super.down(msg);
-    }
-
     @Override
     public Object down(Event evt) {
         Object retVal = super.down(evt);
@@ -292,50 +281,97 @@ public class NettyTP extends TP implements NettyReceiverListener {
 
     @Override
     protected void _send(Message msg, Address dest) {
-        if (msg instanceof ByteBufMessage) {
-            if(stats) {
-                msg_stats.incrNumMsgsSent(1);
-                msg_stats.incrNumBytesSent(msg.size());
+        if(stats) {
+            msg_stats.incrNumMsgsSent(1);
+            msg_stats.incrNumBytesSent(msg.size());
+        }
+        // Note this completely bypasses the bundler
+        ByteBuf messageBytes = null;
+        if (dest == null) {
+            // Not we send the original message first and then copy afterwards - this is safe because refCnt is 2
+            for (Address mbr : members) {
+                PhysicalAddress target = mbr instanceof PhysicalAddress ? (PhysicalAddress) mbr : logical_addr_cache.get(mbr);
+                if (Objects.equals(local_physical_addr, target)) {
+                    continue;
+                }
+                ByteBuf bufToUse;
+                if (messageBytes != null) {
+                    // Share memory region between commands but retain the reference so it won't be released
+                    // until all are done reading it
+                    bufToUse = messageBytes.retainedSlice(0, messageBytes.writerIndex());
+                } else {
+                    // Need to retain so next loop can reference the buffer in case it was consumed already
+                    bufToUse = messageBytes = bufFromMessage(msg, dest).retain();
+                }
+                try {
+                    bufSend(bufToUse, msg.isFlagSet(Message.Flag.OOB), target);
+                } catch (Throwable t) {
+                    log.error(Util.getMessage("FailureSendingToPhysAddr"), local_addr, mbr, t);
+                }
             }
-            // Note this completely bypasses the bundler
-            ByteBufMessage byteBufMessage = (ByteBufMessage) msg;
-            if (dest == null) {
-                // Not we send the original message first and then copy afterwards - this is safe because refCnt is 2
-                boolean sentOriginal = false;
-                for (Address mbr : members) {
-                    PhysicalAddress target = mbr instanceof PhysicalAddress ? (PhysicalAddress) mbr : logical_addr_cache.get(mbr);
-                    if (Objects.equals(local_physical_addr, target)) {
-                        continue;
-                    }
-                    ByteBufMessage msgToUse;
-                    // Have to use a copy for each member except last we use the original message
-                    if (sentOriginal) {
-                        // TODO: maybe we can check something to reuse the message in some cases?
-                        msgToUse = (ByteBufMessage) byteBufMessage.copy(true, true);
-                    } else {
-                        msgToUse = byteBufMessage;
-                        sentOriginal = true;
-                    }
-                    try {
-                        byteBufSend(msgToUse, target);
-                    } catch (Throwable t) {
-                        log.error(Util.getMessage("FailureSendingToPhysAddr"), local_addr, mbr, t);
-                    }
-                }
-                if (!sentOriginal) {
-                    // When message is not sent down the ByteBuf is never released by channel
-                    byteBufMessage.decr();
-                }
-            } else {
-                byteBufSend(byteBufMessage, dest);
+            if (messageBytes != null) {
+                messageBytes.release();
             }
         } else {
-            super._send(msg, dest);
+            bufSend(bufFromMessage(msg, dest), msg.isFlagSet(Message.Flag.OOB), dest);
         }
     }
 
+    private ByteBuf bufFromMessage(Message msg, Address dest) {
+        byte[] replyAdder = server.replyAdder;
+        if (msg instanceof ByteBufMessage) {
+            return bufFromMessage(replyAdder, (ByteBufMessage) msg, dest);
+        }
+
+        int totalSize = msg.size() + TP.MSG_OVERHEAD + replyAdder.length;
+        ByteBuf buf = ByteBufAllocator.DEFAULT.buffer(totalSize + Integer.BYTES, totalSize + Integer.BYTES);
+        buf.writeInt(totalSize);
+        buf.writeBytes(replyAdder);
+        try (ByteBufOutputStream bbos = new ByteBufOutputStream(buf)) {
+            Util.writeMessage(msg, bbos, msg.dest() == null);
+        } catch(IOException e) {
+            log.trace(Util.getMessage("SendFailure"), local_addr, (dest == null? "cluster" : dest), msg.size(),
+                  e.toString(), msg.printHeaders());
+        }
+        return buf;
+    }
+
+        private ByteBuf bufFromMessage(byte[] replyAdder, ByteBufMessage msg, Address dest) {
+            int bufferSize = (Integer.BYTES * 2) + replyAdder.length + TP.MSG_OVERHEAD + msg.nonPayloadSize();
+            ByteBuf first = ByteBufAllocator.DEFAULT.buffer(bufferSize, bufferSize);
+            ByteBuf payload = msg.getBuf();
+            first.writeInt(bufferSize - Integer.BYTES + payload.readableBytes());
+            first.writeBytes(replyAdder);
+
+            try (ByteBufOutputStream bbos = new ByteBufOutputStream(first)) {
+
+                byte flags = 0;
+                bbos.writeShort(Version.version); // write the version
+                if (msg.getDest() == null)
+                    flags += MULTICAST;
+                bbos.writeByte(flags);
+                bbos.writeShort(msg.getType());
+
+                msg.writeNonPayload(bbos);
+                // TODO: this is written to tell the bytes how big the buffer is
+                bbos.writeInt(payload.readableBytes());
+
+                assert first.writerIndex() == first.capacity();
+                // We send as two ByteBuf so we don't want to modify the original
+            } catch (IOException e) {
+                log.trace(Util.getMessage("SendFailure"), local_addr, (dest == null? "cluster" : dest), msg.size(),
+                      e.toString(), msg.printHeaders());
+            }
+            return Unpooled.compositeBuffer(2).addComponent(true, first)
+                  .addComponent(true, payload);
+        }
+
     private void byteBufSend(ByteBufMessage msg, Address dest) {
-        server.send((IpAddress) toPhysicalAddress(dest), isOOB.get(), msg);
+        server.send((IpAddress) toPhysicalAddress(dest), msg.isFlagSet(Message.Flag.OOB), msg);
+    }
+
+    private void bufSend(ByteBuf buf, boolean oob, Address dest) {
+        server.send((IpAddress) toPhysicalAddress(dest), oob, buf);
     }
 
     private boolean createServer() {
